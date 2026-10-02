@@ -1,0 +1,9 @@
+[master]
+ip = "127.0.0.1"
+port = 8000
+api_token = ""
+
+[daemon]
+poll_interval = 10
+dry_run = true
+log_level = "DEBUG"

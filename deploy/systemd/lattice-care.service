@@ -1,0 +1,25 @@
+[Unit]
+Description=Lattice Daily Care
+After=local-fs.target network-online.target lattice-init.service
+Wants=network-online.target
+ConditionPathExists=/etc/lattice/role
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+Environment=LATTICE_CARE_TRIGGER=scheduled
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.care.runner
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+UMask=0077

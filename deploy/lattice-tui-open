@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+DB="/var/lib/lattice/state.sqlite"
+CLI="/opt/lattice/venv/bin/lattice"
+
+if [ "$(id -u)" -eq 0 ]; then
+    exec env LATTICE_DB_PATH="$DB" "$CLI" re-run
+fi
+
+exec sudo env LATTICE_DB_PATH="$DB" "$CLI" re-run

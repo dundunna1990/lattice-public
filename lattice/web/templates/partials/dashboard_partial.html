@@ -1,0 +1,99 @@
+<div id="dashboard-content" data-protected-panel hx-get="/api/dashboard" hx-trigger="dashboardRefresh from:body, every 15s" hx-target="#dashboard-content" hx-swap="outerHTML">
+    <section class="summary-grid" aria-label="Lattice overview">
+        <article class="summary-card {% if needs_attention %}warning{% else %}healthy{% endif %}">
+            <p>Master</p>
+            <strong>{% if needs_attention and needs_attention | selectattr('worker', 'equalto', 'Master') | list %}Needs attention{% else %}Monitoring{% endif %}</strong>
+        </article>
+        <article class="summary-card {% if healthy_workers == worker_count %}healthy{% else %}warning{% endif %}">
+            <p>Workers</p>
+            <strong>{{ healthy_workers }} healthy{% if worker_count %} · {{ worker_count - healthy_workers }} need attention{% endif %}</strong>
+        </article>
+        <article class="summary-card info">
+            <p>Static IP pool</p>
+            <strong>{{ network_pool_status }}</strong>
+        </article>
+        <article class="summary-card info">
+            <p>Healing mode</p>
+            <strong>{{ autoheal_label }}</strong>
+        </article>
+    </section>
+
+    <div class="section-heading">
+        <div>
+            <h2>Needs attention</h2>
+            <p class="muted">Problems that Lattice stopped on safely and needs you to review.</p>
+        </div>
+        {% if needs_attention %}<a href="/alerts">See all alerts</a>{% endif %}
+    </div>
+
+    {% if needs_attention %}
+    <section class="attention-list" aria-label="Active alerts">
+        {% for a in needs_attention %}
+        <article class="attention-card {{ a.severity }}">
+            <div class="alert-topline">
+                <h3>{{ a.worker }} — {{ a.title }}</h3>
+                <span class="status-badge {{ a.severity }}">{{ a.severity }}</span>
+            </div>
+            <p class="alert-copy">{{ a.message }}</p>
+            <p class="alert-meta">Detected: {{ a.fired_at }}</p>
+            <p class="alert-action">{% if 'repair needs attention' in a.title | lower %}Lattice action: It tried one safe restart, then stopped because recovery was not confirmed.{% elif autoheal_label == 'Automatic' %}Lattice action: No unsafe change was made. Review this alert before taking action.{% else %}Lattice action: Alert only — nothing was restarted.{% endif %}</p>
+            <div class="button-row">
+                {% if a.worker != 'Master' %}<button class="secondary outline compact" hx-post="/api/workers/{{ a.worker }}/recheck" hx-swap="none" hx-disable-elt="this">Recheck now</button>{% endif %}
+                {% if a.worker != 'Master' %}<a href="/worker/{{ a.worker }}" role="button" class="secondary outline compact">View details</a>{% endif %}
+                <button class="secondary outline compact" hx-post="/api/alerts/{{ a.id }}/ack" hx-swap="none" hx-disable-elt="this">Acknowledge</button>
+            </div>
+        </article>
+        {% endfor %}
+    </section>
+    {% else %}
+    <section class="panel"><p class="empty-state">Nothing needs your attention right now.</p></section>
+    {% endif %}
+
+    <div class="section-heading"><h2>Your computers</h2></div>
+    <section class="panel">
+        {% if workers %}
+        <table class="computer-table">
+            <thead><tr><th>Computer</th><th>Status</th><th>Address</th><th>Last check-in</th><th></th></tr></thead>
+            <tbody>
+            {% for w in workers %}
+            <tr>
+                <td><a href="/worker/{{ w.hostname }}"><strong>{{ w.hostname }}</strong></a></td>
+                <td><span class="status-badge {{ w.status }}">{{ w.status }}</span></td>
+                <td>{{ w.ip or "Not assigned" }}</td>
+                <td>{{ w.last_heartbeat or "Not checked in yet" }}</td>
+                <td><button class="secondary outline compact" hx-post="/api/workers/{{ w.hostname }}/recheck" hx-swap="none" hx-disable-elt="this">Recheck</button></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty-state">No workers have been added yet.</p>
+        {% endif %}
+    </section>
+
+    <div class="section-heading"><div><h2>Repair activity</h2><p class="muted">What Lattice tried and whether the computer recovered.</p></div></div>
+    <section class="panel">
+        {% if repairs %}
+        <ul class="event-list">
+        {% for repair in repairs %}
+            <li><span class="status-badge {{ repair.severity }}">{{ repair.type | replace('autoheal.', '') | replace('_', ' ') }}</span> <strong>{{ repair.worker }}</strong><p>{{ repair.message }} <span class="muted">· {{ repair.timestamp }}</span></p></li>
+        {% endfor %}
+        </ul>
+        {% else %}
+        <p class="empty-state">No repairs have been needed yet.</p>
+        {% endif %}
+    </section>
+
+    <div class="section-heading"><h2>Recent activity</h2><a href="/events">View all</a></div>
+    <section class="panel">
+        {% if events %}
+        <ul class="event-list">
+        {% for e in events[:6] %}
+            <li><span class="status-badge {{ e.severity }}">{{ e.severity }}</span> <strong>{{ e.worker }}</strong><p>{{ e.message }} <span class="muted">· {{ e.timestamp }}</span></p></li>
+        {% endfor %}
+        </ul>
+        {% else %}
+        <p class="empty-state">No activity has been recorded yet.</p>
+        {% endif %}
+    </section>
+</div>

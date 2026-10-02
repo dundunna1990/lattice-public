@@ -1,0 +1,17 @@
+[Unit]
+Description=Reconcile Lattice dedicated file transport
+After=local-fs.target
+ConditionPathExists=/var/lib/lattice/file-transport-request.json
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /run/sshd
+ExecStart=/opt/lattice/bin/lattice-file-transport-exec
+ExecStartPost=/usr/bin/systemctl --no-block restart lattice-file-sshd.service
+
+Restart=on-failure
+RestartSec=30s
+TimeoutStartSec=45

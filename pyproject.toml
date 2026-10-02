@@ -1,0 +1,120 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lattice"
+version = "0.1.0"
+description = "LAN mesh monitor and auto-heal for small Linux fleets"
+readme = "README.md"
+license = { text = "Proprietary" }
+authors = [{ name = "LatticeLabs", email = "maintainers@example.invalid" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Networking",
+]
+keywords = ["monitoring", "auto-heal", "lan", "ssh", "mesh"]
+
+dependencies = [
+    "aiosqlite>=0.19",
+    "fastapi>=0.110",
+    "jinja2>=3.0",
+    "netifaces>=0.11",
+    "tomli-w>=1.0",
+    "tomli>=2.0",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "click>=8.1",
+    "slowapi>=0.1.9",
+    "structlog>=24.1",
+    "httpx>=0.26",
+    "sdnotify>=0.3.2",
+    "tenacity>=8.2",
+    "uvicorn[standard]>=0.27",
+]
+
+[project.optional-dependencies]
+worker = []
+master = []
+test = ["pytest>=8.0", "pytest-asyncio>=0.23", "pip-audit>=2.7"]
+all = ["lattice[worker,master]"]
+
+[project.scripts]
+lattice = "lattice.cli.main:main"
+lattice-worker = "lattice.worker.main:main"
+lattice-master = "lattice.daemon.main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["lattice", "tests"]
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM", "PL", "RUF"]
+ignore = ["PLR0913", "PLR2004", "SIM108"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B008", "PLR2004"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--showlocals", "--tb=short"]
+markers = [
+    "integration: integration tests (need real services)",
+    "e2e: real-machine end-to-end tests (explicit opt-in required)",
+    "backup_e2e: real three-node Backup V1 tests (separate explicit opt-in required)",
+    "backup_destructive_e2e: Backup V1 tests that intentionally alter backup/restore runtime state",
+    "destructive_e2e: real-machine tests that may change service, network, pairing, or install state",
+    "fleet_reset_e2e: destructive tests that revoke membership, uninstall, or rebuild fleet state",
+    "autoheal_live_e2e: tests that intentionally require live auto-heal execution with dry-run disabled",
+    "slow: slow tests (>5s)",
+]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["lattice"]
+branch = true
+omit = ["*/tests/*", "*/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
+skip_covered = false
+fail_under = 80

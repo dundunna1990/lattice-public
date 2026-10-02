@@ -1,0 +1,8 @@
+#!/bin/sh
+# Root-owned narrow Backup control entry point. sudo intentionally strips the
+# caller environment, so provide only Lattice's canonical runtime paths here.
+export LATTICE_CONFIG_PATH=/etc/lattice/lattice.toml
+export LATTICE_DB_PATH=/var/lib/lattice/state.sqlite
+export LATTICE_SOCKET_PATH=/run/lattice/master.sock
+cd /opt/lattice
+exec /opt/lattice/venv/bin/python -I -m lattice.backup.control "$@"

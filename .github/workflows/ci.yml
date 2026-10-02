@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "BACKUP"]
+  pull_request:
+    branches: ["main", "BACKUP"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[test]'
+      - name: Compile
+        run: python -m compileall -q lattice tests
+      - name: Unit and integration tests
+        run: python -m pytest -m 'not e2e and not backup_e2e and not backup_destructive_e2e and not destructive_e2e and not fleet_reset_e2e and not autoheal_live_e2e'

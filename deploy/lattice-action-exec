@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Restricted sudo helper for lattice workers.
+
+Replaces broad "sudo systemctl" with a validated narrow allowlist.
+Called by lattice worker API when a heal action needs to run as root.
+Validates action + target against the same allowlist as the worker API,
+then runs the exact systemctl command.
+
+Usage: sudo /opt/lattice/bin/lattice-action-exec <action> <target>
+   e.g. sudo /opt/lattice/bin/lattice-action-exec restart lattice-worker.service
+"""
+import os
+import subprocess
+import sys
+
+
+# Batch 1 deliberately permits only one exact recovery operation. Broader
+# user-selected service healing belongs in a later, explicitly approved design.
+ALLOWED_OPERATIONS = {
+    ("restart", "lattice-worker.service"),
+    ("status", "lattice-worker.service"),
+}
+
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: lattice-action-exec <action> <target>", file=sys.stderr)
+        sys.exit(2)
+    action, target = sys.argv[1], sys.argv[2]
+    if (action, target) not in ALLOWED_OPERATIONS:
+        print(
+            "REFUSED: only restart/status of lattice-worker.service is permitted",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+    if os.geteuid() != 0:
+        print("REFUSED: helper must run as root", file=sys.stderr)
+        sys.exit(3)
+    if action == "status":
+        cmd = ["/usr/bin/systemctl", "is-active", target]
+    else:
+        cmd = ["/usr/bin/systemctl", "restart", target]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        print(f"FAILED: {action} {target} timed out after 30s", file=sys.stderr)
+        sys.exit(4)
+    print(f"OK: {' '.join(cmd)} -> returncode={result.returncode}")
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    sys.exit(0 if result.returncode == 0 else 1)
+
+
+if __name__ == "__main__":
+    main()

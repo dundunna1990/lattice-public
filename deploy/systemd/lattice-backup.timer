@@ -1,0 +1,14 @@
+[Unit]
+Description=Run nightly Lattice backups and retry missed backups
+
+[Timer]
+OnBootSec=10min
+OnCalendar=*-*-* 02:00:00
+OnUnitInactiveSec=1h
+AccuracySec=1min
+RandomizedDelaySec=5min
+Persistent=true
+Unit=lattice-backup.service
+
+[Install]
+WantedBy=timers.target

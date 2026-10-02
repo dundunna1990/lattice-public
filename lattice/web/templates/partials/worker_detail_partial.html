@@ -1,0 +1,42 @@
+
+<div id="worker-detail" data-protected-panel hx-get="/api/workers/{{ worker.hostname }}/partial" hx-trigger="every 15s" hx-target="#worker-detail" hx-swap="outerHTML">
+    <div class="grid">
+        <div class="card">
+            <h3>Info</h3>
+            <ul>
+                <li>Status: <span class="status-badge {{ worker.status }}">{{ worker.status }}</span></li>
+                <li>IP: {{ worker.ip }}</li>
+                <li>Last Heartbeat: {{ worker.last_heartbeat }}</li>
+                <li>Uptime: {{ worker.uptime }}</li>
+            </ul>
+        </div>
+        <div class="card">
+            <h3>Services</h3>
+            <table>
+                <thead><tr><th>Name</th><th>Status</th><th>Type</th><th>Auto‑heal</th></tr></thead>
+                <tbody>
+                {% for s in worker.services %}
+                <tr>
+                    <td>{{ s.name }}</td>
+                    <td><span class="status-badge {{ s.status }}">{{ s.status }}</span></td>
+                    <td>{{ s.type }}</td>
+                    <td>{{ '✓' if s.auto_heal else '✗' }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="card">
+        <h3>Recent Events</h3>
+        <table>
+            <thead><tr><th>Time</th><th>Severity</th><th>Message</th></tr></thead>
+            <tbody>
+            {% for e in worker.events %}
+            <tr><td>{{ e.timestamp }}</td><td>{{ e.severity }}</td><td>{{ e.message }}</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <button hx-post="/api/workers/{{ worker.hostname }}/recheck" hx-disable-elt="this" class="outline">Force Recheck</button>
+</div>

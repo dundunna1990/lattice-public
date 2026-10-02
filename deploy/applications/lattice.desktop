@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Lattice
+GenericName=Lattice
+Comment=Open the Lattice fleet dashboard
+Exec=/opt/lattice/bin/lattice-tui-open
+Icon=/usr/share/pixmaps/lattice.png
+Terminal=true
+Categories=Network;System;Utility;
+StartupNotify=true
+X-Lattice-Managed=true

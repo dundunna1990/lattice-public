@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">Lattice</p>
+        <h1>Alerts</h1>
+        <p class="muted">Each alert explains the computer, the problem, and what Lattice did.</p>
+    </div>
+</div>
+<div id="alerts-content" data-protected-panel hx-get="/api/alerts/partial" hx-trigger="load, alertsRefresh from:body, every 15s" hx-target="#alerts-content" hx-swap="outerHTML">
+    <div class="loading">Connecting to your Lattice master…</div>
+</div>
+{% endblock %}

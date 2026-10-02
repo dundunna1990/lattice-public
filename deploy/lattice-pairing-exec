@@ -1,0 +1,631 @@
+#!/usr/bin/env python3
+"""Root-owned helper that installs one validated Lattice pairing request."""
+import base64
+from datetime import datetime, timezone
+import hashlib
+import grp
+import ipaddress
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import secrets
+import stat
+import sys
+import tempfile
+import subprocess
+import uuid
+
+
+STATE_PATH = Path("/var/lib/lattice/pairing.json")
+MASTER_ENDPOINT_PATH = Path("/var/lib/lattice/master-endpoint.json")
+TOKEN_DIR = Path("/etc/lattice/tokens")
+PKI_DIR = Path("/etc/lattice/pki")
+FLEET_DIR = Path("/etc/lattice/fleet")
+FLEET_BOOTSTRAP_PATH = FLEET_DIR / "bootstrap.json"
+RECOVERY_AUTHORITY_PATH = Path("/var/lib/lattice-root/recovery-authority.json")
+NETWORK_ASSIGNMENT_AUTHORITY_PATH = Path("/var/lib/lattice-root/network-assignment-authority.json")
+NODE_IDENTITY_PATH = Path("/var/lib/lattice/node-identity.json")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$")
+USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+
+def fail(message: str) -> None:
+    print(f"REFUSED: {message}", file=sys.stderr)
+    raise SystemExit(3)
+
+
+def atomic_write(path: Path, text: str, mode: int, uid: int, gid: int) -> None:
+    directory_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        directory_fd = os.open(path.parent, directory_flags)
+    except OSError as exc:
+        fail(f"unsafe parent directory for {path}: {exc}")
+    temporary_name = f".{path.name}.{secrets.token_hex(12)}.tmp"
+    descriptor = None
+    try:
+        try:
+            metadata = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            metadata = None
+        if metadata is not None and (
+            not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+        ):
+            fail(f"refusing to replace unsafe path {path}")
+        flags = (
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(temporary_name, flags, mode, dir_fd=directory_fd)
+        payload = text.encode("utf-8")
+        written = 0
+        while written < len(payload):
+            written += os.write(descriptor, payload[written:])
+        os.fchown(descriptor, uid, gid)
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(
+            temporary_name, path.name,
+            src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
+        )
+        os.fsync(directory_fd)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
+
+
+def safe_read(path: Path, *, expected_uid: int, max_bytes: int) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    directory_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        directory_fd = os.open(path.parent, directory_flags)
+        descriptor = os.open(path.name, flags, dir_fd=directory_fd)
+    except OSError as exc:
+        if "directory_fd" in locals():
+            os.close(directory_fd)
+        fail(f"cannot safely open {path}: {exc}")
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            fail(f"{path} is not a single regular file")
+        if metadata.st_uid != expected_uid or metadata.st_mode & 0o022:
+            fail(f"{path} has unsafe ownership or permissions")
+        if metadata.st_size > max_bytes:
+            fail(f"{path} is too large")
+        raw = os.read(descriptor, max_bytes + 1)
+    finally:
+        os.close(descriptor)
+        os.close(directory_fd)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        fail(f"{path} is not valid UTF-8")
+
+
+def safe_existing_directory(path: Path, *, uid: int, allow_public_read: bool = True) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        fail(f"cannot inspect directory {path}: {exc}")
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != uid:
+        fail(f"{path} is not a trusted directory")
+    forbidden = 0o022 if allow_public_read else 0o077
+    if metadata.st_mode & forbidden:
+        fail(f"{path} has unsafe permissions")
+
+
+def authorized_key_matches(line: str, key_blob: str) -> bool:
+    fields = line.split()
+    return any(
+        fields[index] == "ssh-ed25519" and fields[index + 1] == key_blob
+        for index in range(len(fields) - 1)
+    )
+
+
+def validate_ed25519_public_key(value, label: str) -> str:
+    if not isinstance(value, str) or "\n" in value or "\r" in value:
+        fail(f"{label} must be one line")
+
+    normalized = value.strip()
+    fields = normalized.split()
+
+    if len(fields) not in (2, 3) or fields[0] != "ssh-ed25519":
+        fail(f"{label} must be an Ed25519 public key")
+
+    try:
+        decoded = base64.b64decode(fields[1], validate=True)
+    except Exception:
+        fail(f"{label} has invalid base64")
+
+    if len(decoded) < 4:
+        fail(f"{label} is truncated")
+
+    algorithm_length = int.from_bytes(decoded[0:4], "big")
+    algorithm_end = 4 + algorithm_length
+
+    if algorithm_end + 4 > len(decoded):
+        fail(f"{label} is truncated")
+
+    algorithm = decoded[4:algorithm_end]
+    key_length = int.from_bytes(
+        decoded[algorithm_end:algorithm_end + 4],
+        "big",
+    )
+
+    key_start = algorithm_end + 4
+    key_end = key_start + key_length
+
+    if (
+        algorithm != b"ssh-ed25519"
+        or key_length != 32
+        or key_end != len(decoded)
+    ):
+        fail(f"{label} is not a valid Ed25519 key")
+
+    return normalized
+
+
+def public_key_fingerprint(value: str) -> str:
+    normalized = validate_ed25519_public_key(
+        value,
+        "file host public key",
+    )
+    blob = base64.b64decode(
+        normalized.split()[1],
+        validate=True,
+    )
+    digest = base64.b64encode(
+        hashlib.sha256(blob).digest()
+    ).decode("ascii").rstrip("=")
+
+    return f"SHA256:{digest}"
+
+
+def validate_uuid4(value, label: str) -> str:
+    try:
+        parsed = uuid.UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        fail(f"{label} is invalid")
+
+    if parsed.version != 4:
+        fail(f"{label} must be UUIDv4")
+
+    return str(parsed)
+
+
+def snapshot_file(path: Path, *, expected_uid: int, max_bytes: int = 1024 * 1024):
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        fail(f"refusing unsafe existing path {path}")
+    text = safe_read(path, expected_uid=expected_uid, max_bytes=max_bytes)
+    return (text, stat.S_IMODE(metadata.st_mode), metadata.st_uid, metadata.st_gid)
+
+
+def restore_file(path: Path, snapshot) -> None:
+    if snapshot is None:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+            path.unlink()
+        return
+    text, mode, uid, gid = snapshot
+    atomic_write(path, text, mode, uid, gid)
+
+
+def main() -> None:
+    if os.geteuid() != 0:
+        fail("helper must run as root")
+    if len(sys.argv) != 4 or sys.argv[1] != "--approve" or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", sys.argv[2]) or not re.fullmatch(r"[0-9a-f]{64}", sys.argv[3]):
+        fail("usage: lattice-pairing-exec --approve PAIRING_ID REQUEST_DIGEST")
+    try:
+        lattice_account = pwd.getpwnam("lattice")
+        lattice_group = grp.getgrnam("lattice")
+    except KeyError:
+        fail("lattice service account or group does not exist")
+    try:
+        request = json.loads(
+            safe_read(STATE_PATH, expected_uid=lattice_account.pw_uid, max_bytes=32768)
+        )
+    except json.JSONDecodeError as exc:
+        fail(f"cannot read pending pairing request: {exc}")
+    if not isinstance(request, dict):
+        fail("pending pairing request has an invalid format")
+    if request.get("state") != "awaiting_approval":
+        fail("there is no pending pairing request")
+    if not isinstance(request.get("pairing_id"), str) or request["pairing_id"] != sys.argv[2]:
+        fail("the requested pairing ID does not match the pending request")
+
+    approval_fields = {
+        key: request.get(key)
+        for key in (
+            "pairing_id", "hostname", "ssh_user", "master_hostname", "master_ip",
+            "master_public_key",
+            "fleet_id",
+            "master_node_id",
+            "master_file_public_key",
+            "master_file_host_public_key",
+            "master_file_host_key_fingerprint",
+            "master_shell_public_key",
+            "master_shell_host_public_key",
+            "master_shell_host_key_fingerprint",
+            "fleet_signing_public_key",
+            "worker_token",
+            "master_ca_certificate",
+            "master_api_port",
+            "approval_expires_at",
+        )
+    }
+    expected_digest = hashlib.sha256(
+        json.dumps(approval_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if not __import__("hmac").compare_digest(expected_digest, sys.argv[3]):
+        fail("pending request changed after it was reviewed")
+    try:
+        approval_expires_at = datetime.fromisoformat(str(request["approval_expires_at"]))
+        if approval_expires_at.tzinfo is None:
+            raise ValueError("timezone is missing")
+    except (KeyError, TypeError, ValueError):
+        fail("pending request has an invalid expiration")
+    if approval_expires_at <= datetime.now(timezone.utc):
+        fail("pending pairing approval has expired")
+
+    hostname = str(request.get("hostname", ""))
+    ssh_user = str(request.get("ssh_user", ""))
+    token = str(request.get("worker_token", ""))
+    master_ca = str(request.get("master_ca_certificate", ""))
+    public_key_value = request.get("master_public_key", "")
+    if not isinstance(public_key_value, str) or "\n" in public_key_value or "\r" in public_key_value:
+        fail("public key must be a single line")
+    public_key = public_key_value.strip()
+    master_hostname = str(request.get("master_hostname", ""))
+    if not NAME_RE.fullmatch(hostname) or not NAME_RE.fullmatch(master_hostname) or not USER_RE.fullmatch(ssh_user):
+        fail("invalid hostname or SSH user")
+    if not 32 <= len(token) <= 512 or "\n" in token or "\r" in token:
+        fail("worker token must be a single safe line")
+    master_api_port = request.get("master_api_port", 8080)
+    if isinstance(master_api_port, bool) or not isinstance(master_api_port, int) or not 1 <= master_api_port <= 65535:
+        fail("invalid master API port")
+    if not master_ca.startswith("-----BEGIN CERTIFICATE-----") or not master_ca.rstrip().endswith("-----END CERTIFICATE-----"):
+        fail("invalid master CA certificate")
+    try:
+        master_ip_value = ipaddress.ip_address(str(request.get("master_ip", "")))
+    except ValueError:
+        fail("invalid master IP")
+    if not isinstance(master_ip_value, ipaddress.IPv4Address):
+        fail("only IPv4 master addresses are supported")
+    master_ip = str(master_ip_value)
+    key_fields = public_key.split()
+    if len(key_fields) not in (2, 3) or key_fields[0] != "ssh-ed25519":
+        fail("only Ed25519 public keys are accepted")
+    try:
+        decoded_key = base64.b64decode(key_fields[1], validate=True)
+    except Exception:
+        fail("invalid public-key encoding")
+    algorithm_length = int.from_bytes(decoded_key[0:4], "big")
+    algorithm_end = 4 + algorithm_length
+    algorithm = decoded_key[4:algorithm_end]
+    key_length = int.from_bytes(decoded_key[algorithm_end:algorithm_end + 4], "big")
+    key_start = algorithm_end + 4
+    key_end = key_start + key_length
+    if algorithm != b"ssh-ed25519" or key_length != 32 or key_end != len(decoded_key):
+        fail("invalid Ed25519 key length")
+
+    fleet_id = validate_uuid4(
+        request.get("fleet_id"),
+        "fleet ID",
+    )
+    master_node_id = validate_uuid4(
+        request.get("master_node_id"),
+        "master node ID",
+    )
+
+    master_file_public_key = validate_ed25519_public_key(
+        request.get("master_file_public_key"),
+        "master file public key",
+    )
+    master_file_host_public_key = validate_ed25519_public_key(
+        request.get("master_file_host_public_key"),
+        "master file host public key",
+    )
+    fleet_signing_public_key = validate_ed25519_public_key(
+        request.get("fleet_signing_public_key"),
+        "fleet signing public key",
+    )
+
+    advertised_file_host_fingerprint = str(
+        request.get(
+            "master_file_host_key_fingerprint",
+            "",
+        )
+    )
+
+    if advertised_file_host_fingerprint != public_key_fingerprint(
+        master_file_host_public_key
+    ):
+        fail(
+            "master file host fingerprint does not match "
+            "its public key"
+        )
+
+    shell_values = (
+        request.get("master_shell_public_key"),
+        request.get("master_shell_host_public_key"),
+        request.get("master_shell_host_key_fingerprint"),
+    )
+    shell_present = any(value is not None for value in shell_values)
+    master_shell_public_key = None
+    master_shell_host_public_key = None
+    advertised_shell_host_fingerprint = None
+    if shell_present:
+        if any(value is None for value in shell_values):
+            fail("master shell identity is incomplete")
+        master_shell_public_key = validate_ed25519_public_key(
+            shell_values[0], "master shell public key"
+        )
+        master_shell_host_public_key = validate_ed25519_public_key(
+            shell_values[1], "master shell host public key"
+        )
+        advertised_shell_host_fingerprint = str(shell_values[2])
+        if advertised_shell_host_fingerprint != public_key_fingerprint(
+            master_shell_host_public_key
+        ):
+            fail("master shell host fingerprint does not match its public key")
+        identities = [
+            master_file_public_key.split()[:2],
+            master_file_host_public_key.split()[:2],
+            master_shell_public_key.split()[:2],
+            master_shell_host_public_key.split()[:2],
+        ]
+        if len({tuple(identity) for identity in identities}) != len(identities):
+            fail("file and shell SSH identities must all be cryptographically separate")
+
+    try:
+        account = pwd.getpwnam(ssh_user)
+    except KeyError:
+        fail("SSH user does not exist")
+    if account.pw_uid == 0:
+        fail("root may not be used as a Lattice SSH target")
+    sudo_user = os.environ.get("SUDO_USER")
+    if not sudo_user or sudo_user != ssh_user:
+        fail("approval must be run locally by the configured worker SSH user")
+    home = Path(account.pw_dir)
+    if not home.is_absolute() or home == Path("/"):
+        fail("SSH user home directory is unsafe")
+    safe_existing_directory(home, uid=account.pw_uid)
+    ssh_dir = Path(account.pw_dir) / ".ssh"
+    if ssh_dir.exists() or ssh_dir.is_symlink():
+        safe_existing_directory(ssh_dir, uid=account.pw_uid, allow_public_read=False)
+    else:
+        os.mkdir(ssh_dir, mode=0o700)
+        os.chown(ssh_dir, account.pw_uid, account.pw_gid)
+    authorized_keys = ssh_dir / "authorized_keys"
+    authorized_snapshot = snapshot_file(
+        authorized_keys, expected_uid=account.pw_uid
+    )
+    existing_text = authorized_snapshot[0] if authorized_snapshot else ""
+    existing = existing_text.splitlines()
+    restrictions = (
+        f'command="/opt/lattice/bin/lattice-ssh-command",from="{master_ip}/32",no-agent-forwarding,no-port-forwarding,'
+        "no-X11-forwarding,no-pty,no-user-rc"
+    )
+    entry = f"{restrictions} {public_key}"
+    key_blob = key_fields[1]
+    updated = [line for line in existing if not authorized_key_matches(line, key_blob)]
+    updated.append(entry)
+    safe_existing_directory(TOKEN_DIR, uid=0)
+    safe_existing_directory(PKI_DIR, uid=0)
+
+    lattice_etc = FLEET_DIR.parent
+    safe_existing_directory(lattice_etc, uid=0)
+
+    if FLEET_DIR.exists() or FLEET_DIR.is_symlink():
+        safe_existing_directory(FLEET_DIR, uid=0)
+    else:
+        os.mkdir(FLEET_DIR, mode=0o750)
+        os.chown(FLEET_DIR, 0, lattice_group.gr_gid)
+
+    sudoers_dir = Path("/etc/sudoers.d")
+    safe_existing_directory(sudoers_dir, uid=0)
+    safe_existing_directory(STATE_PATH.parent, uid=lattice_account.pw_uid)
+    token_path = TOKEN_DIR / f"{hostname}.token"
+    ca_path = PKI_DIR / "ca.crt"
+    sudoers_path = Path(f"/etc/sudoers.d/lattice-remote-heal-{ssh_user}")
+    recovery_public_key = f"ssh-ed25519 {key_blob}"
+    recovery_authority = {
+        "version": 1,
+        "pairing_id": request["pairing_id"],
+        "worker_hostname": hostname,
+        "ssh_user": ssh_user,
+        "master_hostname": str(request.get("master_hostname", "")),
+        "master_ip": master_ip,
+        "master_key_blob": key_blob,
+        "master_public_key": recovery_public_key,
+        "master_key_fingerprint": public_key_fingerprint(recovery_public_key),
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    sudoers = (
+        f"{ssh_user} ALL=(root) NOPASSWD: /opt/lattice/bin/lattice-action-exec status lattice-worker.service\n"
+        f"{ssh_user} ALL=(root) NOPASSWD: /opt/lattice/bin/lattice-action-exec restart lattice-worker.service\n"
+    )
+    validation_fd, validation_name = tempfile.mkstemp(
+        dir=sudoers_dir, prefix=".lattice-remote-heal.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(validation_fd, "w", encoding="utf-8") as handle:
+            handle.write(sudoers)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chown(validation_name, 0, 0)
+        os.chmod(validation_name, 0o440)
+        validation = subprocess.run(
+            ["visudo", "-c", "-f", validation_name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    finally:
+        Path(validation_name).unlink(missing_ok=True)
+    if validation.returncode != 0:
+        fail("generated narrow SSH recovery rule was rejected")
+
+    # Validate and snapshot every destination before the first write.  If a
+    # later atomic replace fails, restore the exact prior set rather than
+    # leaving a half-paired root authorization behind.
+    token_snapshot = snapshot_file(token_path, expected_uid=0, max_bytes=1024)
+    ca_snapshot = snapshot_file(ca_path, expected_uid=0, max_bytes=32768)
+    sudoers_snapshot = snapshot_file(
+        sudoers_path,
+        expected_uid=0,
+        max_bytes=4096,
+    )
+    fleet_bootstrap_snapshot = snapshot_file(
+        FLEET_BOOTSTRAP_PATH,
+        expected_uid=0,
+        max_bytes=16384,
+    )
+    endpoint_snapshot = snapshot_file(
+        MASTER_ENDPOINT_PATH, expected_uid=lattice_account.pw_uid, max_bytes=4096
+    )
+    recovery_authority_snapshot = snapshot_file(
+        RECOVERY_AUTHORITY_PATH, expected_uid=0, max_bytes=16384
+    )
+    network_authority_snapshot = snapshot_file(
+        NETWORK_ASSIGNMENT_AUTHORITY_PATH, expected_uid=0, max_bytes=16384
+    )
+    try:
+        node_identity = json.loads(
+            safe_read(NODE_IDENTITY_PATH, expected_uid=0, max_bytes=16384)
+        )
+        if not isinstance(node_identity, dict):
+            raise ValueError("node identity is not an object")
+        worker_node_id = validate_uuid4(
+            node_identity.get("node_id"), "worker node ID"
+        )
+    except (json.JSONDecodeError, ValueError):
+        fail("worker permanent node identity is unavailable or invalid")
+    network_authority = {
+        "version": 1,
+        "state": "ready",
+        "pairing_id": request["pairing_id"],
+        "worker_hostname": hostname,
+        "worker_node_id": worker_node_id,
+        "fleet_id": fleet_id,
+        "master_node_id": master_node_id,
+        "master_hostname": master_hostname,
+        "fleet_signing_public_key": fleet_signing_public_key,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    paired = {
+        "state": "paired",
+        "pairing_id": request["pairing_id"],
+        "hostname": hostname,
+        "ssh_user": ssh_user,
+        "master_hostname": str(request.get("master_hostname", "")),
+        "master_ip": master_ip,
+        "master_key_blob": key_blob,
+        "fleet_id": fleet_id,
+        "master_node_id": master_node_id,
+        "paired_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        atomic_write(
+            authorized_keys, "\n".join(updated) + "\n", 0o600,
+            account.pw_uid, account.pw_gid,
+        )
+        atomic_write(token_path, token + "\n", 0o640, 0, lattice_group.gr_gid)
+        atomic_write(ca_path, master_ca.rstrip() + "\n", 0o644, 0, lattice_group.gr_gid)
+        atomic_write(sudoers_path, sudoers, 0o440, 0, 0)
+        atomic_write(
+            RECOVERY_AUTHORITY_PATH,
+            json.dumps(recovery_authority, sort_keys=True) + "\n",
+            0o600, 0, 0,
+        )
+        atomic_write(
+            NETWORK_ASSIGNMENT_AUTHORITY_PATH,
+            json.dumps(network_authority, sort_keys=True) + "\n",
+            0o600, 0, 0,
+        )
+
+        bootstrap_payload = {
+            "fleet_id": fleet_id,
+            "master_node_id": master_node_id,
+            "master_file_public_key": master_file_public_key,
+            "master_file_host_public_key": master_file_host_public_key,
+            "master_file_host_key_fingerprint": advertised_file_host_fingerprint,
+            "fleet_signing_public_key": fleet_signing_public_key,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if shell_present:
+            bootstrap_payload.update({
+                "master_shell_public_key": master_shell_public_key,
+                "master_shell_host_public_key": master_shell_host_public_key,
+                "master_shell_host_key_fingerprint": advertised_shell_host_fingerprint,
+            })
+        atomic_write(
+            FLEET_BOOTSTRAP_PATH,
+            json.dumps(bootstrap_payload, sort_keys=True) + "\n",
+            0o640,
+            0,
+            lattice_group.gr_gid,
+        )
+
+        atomic_write(
+            MASTER_ENDPOINT_PATH,
+            json.dumps(
+                {"ip": master_ip, "port": master_api_port, "hostname": master_hostname},
+                sort_keys=True,
+            ) + "\n",
+            0o600,
+            lattice_account.pw_uid,
+            lattice_group.gr_gid,
+        )
+        atomic_write(
+            STATE_PATH, json.dumps(paired, sort_keys=True) + "\n", 0o600,
+            lattice_account.pw_uid, lattice_group.gr_gid,
+        )
+    except BaseException:
+        for path, snapshot in reversed(
+            (
+                (authorized_keys, authorized_snapshot),
+                (token_path, token_snapshot),
+                (ca_path, ca_snapshot),
+                (sudoers_path, sudoers_snapshot),
+                (RECOVERY_AUTHORITY_PATH, recovery_authority_snapshot),
+                (NETWORK_ASSIGNMENT_AUTHORITY_PATH, network_authority_snapshot),
+                (
+                    FLEET_BOOTSTRAP_PATH,
+                    fleet_bootstrap_snapshot,
+                ),
+                (MASTER_ENDPOINT_PATH, endpoint_snapshot),
+            )
+        ):
+            try:
+                restore_file(path, snapshot)
+            except BaseException as exc:
+                print(f"WARNING: could not restore {path}: {exc}", file=sys.stderr)
+        raise
+    print("OK: pairing credentials installed")
+    subprocess.run(["systemctl", "--no-block", "restart", "lattice-worker.service"], check=False, timeout=10)
+
+
+if __name__ == "__main__":
+    main()

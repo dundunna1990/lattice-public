@@ -1,0 +1,26 @@
+[Unit]
+Description=Lattice guarded automatic network reconciliation
+After=NetworkManager.service network-online.target lattice-boot-recovery.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecCondition=/usr/bin/grep -Eq ^(master|worker)$ /etc/lattice/role
+ExecStart=/opt/lattice/venv/bin/python -m lattice.ip_change.reconcile
+TimeoutStartSec=90
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/lattice /var/lib/lattice-root /run/lattice
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077

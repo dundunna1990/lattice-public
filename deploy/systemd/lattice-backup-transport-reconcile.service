@@ -1,0 +1,23 @@
+[Unit]
+Description=Reconcile Lattice dedicated backup transport
+After=local-fs.target
+ConditionPathExists=/var/lib/lattice/backup-transport-request.json
+StartLimitIntervalSec=10min
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /run/sshd
+ExecStart=/opt/lattice/bin/lattice-backup-transport-exec
+# Apply revocation first, synchronously restart the dedicated SSH listener,
+# then remove stale mounts/chroots/accounts that are no longer authorized.
+ExecStartPost=/usr/bin/systemctl restart lattice-backup-sshd.service
+ExecStartPost=/opt/lattice/venv/bin/python -m lattice.backup.transport_cleanup
+ExecStartPost=/opt/lattice/bin/lattice-backup-transport-exec --finalize
+
+Restart=on-failure
+RestartSec=30s
+TimeoutStartSec=90

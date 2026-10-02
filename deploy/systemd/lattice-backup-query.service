@@ -1,0 +1,27 @@
+[Unit]
+Description=Execute one read-only Lattice backup repository query
+After=network-online.target lattice-init.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/lattice/backup-query-request.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.backup.query
+TimeoutStartSec=10m
+Nice=15
+IOSchedulingClass=idle
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0027

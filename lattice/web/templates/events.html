@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Events</h2>
+<div id="events-content" data-protected-panel hx-get="/api/events/partial?limit=50" hx-trigger="load, every 15s" hx-target="#events-content" hx-swap="outerHTML">
+    <div class="loading">Loading...</div>
+</div>
+{% endblock %}

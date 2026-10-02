@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep local Master Backup observations fresh
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+Unit=lattice-backup-observation-refresh.service
+
+[Install]
+WantedBy=timers.target

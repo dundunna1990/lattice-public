@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Worker: {{ worker.hostname }}</h2>
+<div id="worker-detail" data-protected-panel hx-get="/api/workers/{{ worker.hostname }}/partial" hx-trigger="load, every 15s" hx-target="#worker-detail" hx-swap="outerHTML">
+    <div class="loading">Loading...</div>
+</div>
+{% endblock %}

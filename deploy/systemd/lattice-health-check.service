@@ -1,0 +1,12 @@
+[Unit]
+Description=Lattice Health Check (periodic)
+After=lattice-master.service
+
+[Service]
+Type=oneshot
+User=lattice
+Group=lattice
+EnvironmentFile=-/etc/lattice/environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.core.self_check
+TimeoutStartSec=30
+# If health check returns non-zero, the timer will log it

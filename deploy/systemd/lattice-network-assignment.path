@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for one approved Lattice worker network assignment
+
+[Path]
+PathExists=/var/lib/lattice/network-assignment-request.json
+Unit=lattice-network-assignment.service
+
+[Install]
+WantedBy=multi-user.target

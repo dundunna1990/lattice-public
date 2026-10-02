@@ -1,0 +1,32 @@
+[Unit]
+Description=Lattice Persistent Trusted Shell Connection Manager
+Requires=lattice-init.service
+After=lattice-init.service network-online.target lattice-shell-sshd.service
+Wants=network-online.target lattice-shell-sshd.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.shell_access.manager
+ExecStartPost=/opt/lattice/venv/bin/python -m lattice.core.release_convergence
+Restart=always
+RestartSec=5s
+TimeoutStartSec=30
+TimeoutStopSec=15
+PrivateTmp=yes
+ProtectSystem=full
+ReadWritePaths=/etc/lattice/shell-ssh
+ReadWritePaths=/etc/ssh/ssh_config.d
+ReadWritePaths=/etc/sudoers.d
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

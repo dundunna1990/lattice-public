@@ -1,0 +1,24 @@
+[Unit]
+Description=Evaluate Lattice backup alerts
+After=lattice-master.service
+ConditionPathExists=/etc/lattice/role
+
+[Service]
+Type=oneshot
+User=lattice
+Group=lattice
+EnvironmentFile=-/etc/lattice/environment
+ExecCondition=/usr/bin/grep -Fxq master /etc/lattice/role
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.backup.alerts
+TimeoutStartSec=90
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

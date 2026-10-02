@@ -1,0 +1,16 @@
+[Unit]
+Description=Lattice Boot Recovery: resolve interrupted IP changes and partial state
+After=network-online.target
+Before=lattice-init.service
+
+[Service]
+Type=oneshot
+User=root
+# This is critical for boot — if it fails, the whole stack fails to start
+ExecStart=/opt/lattice/venv/bin/python -m lattice.ip_change.boot_recovery
+TimeoutStartSec=60
+# Don't restart on failure — if boot recovery fails, the user needs to intervene
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

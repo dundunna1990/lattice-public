@@ -1,0 +1,38 @@
+[Unit]
+Description=Lattice System-Level Peer Mount Manager
+Requires=lattice-init.service
+After=lattice-init.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.file_access.mount_manager
+ExecStartPost=/opt/lattice/venv/bin/python -m lattice.core.release_convergence
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30
+TimeoutStopSec=15
+
+# Mounts must remain visible to the real host mount namespace.
+# Do not enable filesystem namespace sandboxing here: PrivateTmp,
+# ProtectSystem, ReadWritePaths, and similar directives isolate mounts.
+PrivateMounts=no
+PrivateDevices=no
+PrivateTmp=no
+ProtectSystem=no
+# The manager intentionally creates ~/Lattice desktop/file-manager links.
+# Hiding Home breaks that required reconciliation path.
+ProtectHome=no
+ProtectKernelTunables=no
+ProtectKernelModules=no
+ProtectControlGroups=no
+RestrictRealtime=yes
+LockPersonality=yes
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target

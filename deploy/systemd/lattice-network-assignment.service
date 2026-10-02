@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply one approved Lattice worker network assignment
+After=network-online.target lattice-worker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecCondition=/usr/bin/grep -qx worker /etc/lattice/role
+ExecStart=/opt/lattice/bin/lattice-network-exec /var/lib/lattice/network-assignment-request.json
+TimeoutStartSec=90

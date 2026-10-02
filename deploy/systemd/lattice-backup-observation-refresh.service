@@ -1,0 +1,18 @@
+[Unit]
+Description=Refresh local Master Lattice Backup observations
+After=local-fs.target lattice-init.service
+ConditionPathExists=/etc/lattice/role
+
+[Service]
+Type=oneshot
+User=lattice
+Group=lattice
+EnvironmentFile=-/etc/lattice/environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.backup.observation_refresh
+TimeoutStartSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/lattice
+UMask=0077

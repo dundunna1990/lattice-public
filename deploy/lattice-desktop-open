@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+if [ -z "${HOME:-}" ]; then
+    exit 1
+fi
+
+TARGET="$HOME/Lattice"
+
+if [ ! -d "$TARGET" ]; then
+    exit 1
+fi
+
+exec xdg-open "$TARGET"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Lattice backup maintenance
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=lattice-backup-maintenance.service
+
+[Install]
+WantedBy=timers.target

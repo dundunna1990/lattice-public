@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html data-theme="dark">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Lattice</title>
+<link rel="stylesheet" href="/assets/lattice.css">
+<script defer src="/assets/lattice.js"></script>
+
+</head>
+<body>
+<div class="sidebar"><a href="/" class="logo">Lattice</a>
+<nav><ul><li><a href="/" {% if request.path == '/' %}class="active"{% endif %}>Dashboard</a></li>
+<li><a href="/alerts" {% if request.path == '/alerts' %}class="active"{% endif %}>Alerts</a></li>
+<li><a href="/events" {% if request.path == '/events' %}class="active"{% endif %}>Events</a></li>
+<li><button id="disconnect-dashboard" class="secondary outline compact" type="button">Disconnect</button></li></ul></nav></div>
+<div class="main" id="main-content">{% block content %}{% endblock %}</div>
+
+</body></html>

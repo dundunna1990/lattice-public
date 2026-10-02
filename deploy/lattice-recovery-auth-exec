@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""Root-only repair authority for Lattice's port-22 recovery channel."""
+from __future__ import annotations
+
+import base64
+from datetime import datetime, timezone
+import hashlib
+import hmac
+import ipaddress
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import tempfile
+
+STATE_PATH = Path("/var/lib/lattice/pairing.json")
+AUTHORITY_PATH = Path("/var/lib/lattice-root/recovery-authority.json")
+ROLE_PATH = Path("/etc/lattice/role")
+SUDOERS_DIR = Path("/etc/sudoers.d")
+COMMAND_PATH = "/opt/lattice/bin/lattice-ssh-command"
+USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$")
+PAIRING_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+FINGERPRINT_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+
+def fail(message: str, code: int = 3) -> None:
+    print(f"REFUSED: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def _read_regular(path: Path, expected_uid: int, maximum: int) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    directory_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        directory_fd = os.open(path.parent, directory_flags)
+        descriptor = os.open(path.name, flags, dir_fd=directory_fd)
+    except FileNotFoundError:
+        if "directory_fd" in locals():
+            os.close(directory_fd)
+        raise
+    except OSError as exc:
+        if "directory_fd" in locals():
+            os.close(directory_fd)
+        raise RuntimeError(f"cannot safely open {path}: {exc}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise RuntimeError(f"{path} is not a single regular file")
+        if metadata.st_uid != expected_uid or metadata.st_mode & 0o022:
+            raise RuntimeError(f"{path} has unsafe ownership or permissions")
+        if metadata.st_size > maximum:
+            raise RuntimeError(f"{path} is too large")
+        raw = os.read(descriptor, maximum + 1)
+    finally:
+        os.close(descriptor)
+        os.close(directory_fd)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"{path} is not valid UTF-8") from exc
+
+
+def _atomic_write(path: Path, text: str, mode: int, uid: int, gid: int) -> None:
+    directory_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory_fd = os.open(path.parent, directory_flags)
+    temporary_name = f".{path.name}.{secrets.token_hex(12)}.tmp"
+    descriptor = None
+    try:
+        try:
+            metadata = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            metadata = None
+        if metadata is not None and (
+            not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+        ):
+            raise RuntimeError(f"refusing to replace unsafe path {path}")
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            mode,
+            dir_fd=directory_fd,
+        )
+        payload = text.encode("utf-8")
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(descriptor, payload[offset:])
+        os.fchown(descriptor, uid, gid)
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(
+            temporary_name, path.name,
+            src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
+        )
+        os.fsync(directory_fd)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
+
+
+def _safe_directory(path: Path, uid: int, *, private: bool = False) -> None:
+    metadata = path.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != uid:
+        raise RuntimeError(f"{path} is not a trusted directory")
+    forbidden = 0o077 if private else 0o022
+    if metadata.st_mode & forbidden:
+        raise RuntimeError(f"{path} has unsafe permissions")
+
+
+def _validate_key_blob(key_blob: object) -> tuple[str, str]:
+    if not isinstance(key_blob, str) or not key_blob or any(ch.isspace() for ch in key_blob):
+        raise RuntimeError("paired recovery public key is invalid")
+    try:
+        decoded = base64.b64decode(key_blob, validate=True)
+    except Exception as exc:
+        raise RuntimeError("paired recovery public key is not valid base64") from exc
+    if len(decoded) < 12:
+        raise RuntimeError("paired recovery public key is truncated")
+    algorithm_length = int.from_bytes(decoded[0:4], "big")
+    algorithm_end = 4 + algorithm_length
+    if algorithm_end + 4 > len(decoded):
+        raise RuntimeError("paired recovery public key is truncated")
+    algorithm = decoded[4:algorithm_end]
+    key_length = int.from_bytes(decoded[algorithm_end:algorithm_end + 4], "big")
+    key_end = algorithm_end + 4 + key_length
+    if algorithm != b"ssh-ed25519" or key_length != 32 or key_end != len(decoded):
+        raise RuntimeError("paired recovery public key is not Ed25519")
+    digest = base64.b64encode(hashlib.sha256(decoded).digest()).decode("ascii").rstrip("=")
+    return f"ssh-ed25519 {key_blob}", f"SHA256:{digest}"
+
+
+def _load_state() -> dict:
+    lattice = pwd.getpwnam("lattice")
+    payload = json.loads(_read_regular(STATE_PATH, lattice.pw_uid, 32768))
+    if not isinstance(payload, dict):
+        raise RuntimeError("pairing state has an invalid format")
+    return payload
+
+
+def _load_authority() -> dict:
+    try:
+        payload = json.loads(_read_regular(AUTHORITY_PATH, 0, 16384))
+    except FileNotFoundError:
+        fail("root recovery authority is missing; one-time local migration is required", 4)
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise RuntimeError("root recovery authority has an invalid format")
+    return payload
+
+
+def _validated_authority(authority: dict) -> tuple[pwd.struct_passwd, str, str]:
+    pairing_id = authority.get("pairing_id")
+    worker = authority.get("worker_hostname")
+    ssh_user = authority.get("ssh_user")
+    master_ip = authority.get("master_ip")
+    key_blob = authority.get("master_key_blob")
+    if not isinstance(pairing_id, str) or not PAIRING_RE.fullmatch(pairing_id):
+        raise RuntimeError("root recovery authority pairing ID is invalid")
+    if not isinstance(worker, str) or not HOST_RE.fullmatch(worker):
+        raise RuntimeError("root recovery authority worker name is invalid")
+    if not isinstance(ssh_user, str) or not USER_RE.fullmatch(ssh_user):
+        raise RuntimeError("root recovery authority SSH user is invalid")
+    try:
+        parsed_ip = ipaddress.ip_address(str(master_ip))
+    except ValueError as exc:
+        raise RuntimeError("root recovery authority master IP is invalid") from exc
+    if not isinstance(parsed_ip, ipaddress.IPv4Address):
+        raise RuntimeError("root recovery authority requires an IPv4 master")
+    public_key, fingerprint = _validate_key_blob(key_blob)
+    if authority.get("master_public_key") != public_key:
+        raise RuntimeError("root recovery authority public key does not match its key identity")
+    if authority.get("master_key_fingerprint") != fingerprint:
+        raise RuntimeError("root recovery authority fingerprint does not match its key identity")
+    account = pwd.getpwnam(ssh_user)
+    if account.pw_uid == 0:
+        raise RuntimeError("root cannot be a recovery SSH target")
+    return account, public_key, fingerprint
+
+
+def _state_matches_authority(state: dict, authority: dict) -> None:
+    if state.get("state") != "paired":
+        raise RuntimeError("the Worker pairing is not active")
+    comparisons = (
+        ("pairing_id", "pairing_id"),
+        ("hostname", "worker_hostname"),
+        ("ssh_user", "ssh_user"),
+        ("master_ip", "master_ip"),
+        ("master_key_blob", "master_key_blob"),
+    )
+    for state_key, authority_key in comparisons:
+        if state.get(state_key) != authority.get(authority_key):
+            raise RuntimeError(f"pairing state disagrees with root recovery authority: {state_key}")
+
+
+def _canonical_entry(authority: dict, public_key: str) -> str:
+    restrictions = (
+        f'command="{COMMAND_PATH}",from="{authority["master_ip"]}/32",'
+        "no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty,no-user-rc"
+    )
+    return f"{restrictions} {public_key}"
+
+
+def _repair_authorized_keys(authority: dict, account: pwd.struct_passwd, public_key: str) -> None:
+    home = Path(account.pw_dir)
+    if not home.is_absolute() or home == Path("/") or home.is_symlink():
+        raise RuntimeError("recovery SSH user home is unsafe")
+    _safe_directory(home, account.pw_uid)
+    ssh_dir = home / ".ssh"
+    if ssh_dir.exists() or ssh_dir.is_symlink():
+        _safe_directory(ssh_dir, account.pw_uid, private=True)
+    else:
+        os.mkdir(ssh_dir, mode=0o700)
+        os.chown(ssh_dir, account.pw_uid, account.pw_gid)
+    authorized = ssh_dir / "authorized_keys"
+    try:
+        existing = _read_regular(authorized, account.pw_uid, 1024 * 1024).splitlines()
+    except FileNotFoundError:
+        existing = []
+    key_blob = authority["master_key_blob"]
+    kept: list[str] = []
+    for line in existing:
+        fields = line.split()
+        same_key = any(
+            fields[index] == "ssh-ed25519" and fields[index + 1] == key_blob
+            for index in range(len(fields) - 1)
+        )
+        lattice_recovery = f'command="{COMMAND_PATH}"' in line
+        if same_key or lattice_recovery:
+            continue
+        kept.append(line)
+    kept.append(_canonical_entry(authority, public_key))
+    _atomic_write(
+        authorized,
+        "\n".join(kept) + "\n",
+        0o600,
+        account.pw_uid,
+        account.pw_gid,
+    )
+
+
+def _repair_sudoers(authority: dict, account: pwd.struct_passwd) -> None:
+    _safe_directory(SUDOERS_DIR, 0)
+    path = SUDOERS_DIR / f"lattice-remote-heal-{account.pw_name}"
+    text = (
+        f"{account.pw_name} ALL=(root) NOPASSWD: /opt/lattice/bin/lattice-action-exec status lattice-worker.service\n"
+        f"{account.pw_name} ALL=(root) NOPASSWD: /opt/lattice/bin/lattice-action-exec restart lattice-worker.service\n"
+    )
+    descriptor, temporary = tempfile.mkstemp(dir=SUDOERS_DIR, prefix=".lattice-recovery-", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chown(temporary, 0, 0)
+        os.chmod(temporary, 0o440)
+        result = subprocess.run(
+            ["visudo", "-c", "-f", temporary],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("generated narrow recovery sudo rule was rejected")
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    _atomic_write(path, text, 0o440, 0, 0)
+
+
+def repair() -> None:
+    if ROLE_PATH.read_text(encoding="utf-8").strip() != "worker":
+        raise RuntimeError("recovery authorization repair is Worker-only")
+    authority = _load_authority()
+    account, public_key, fingerprint = _validated_authority(authority)
+    state = _load_state()
+    _state_matches_authority(state, authority)
+    _repair_authorized_keys(authority, account, public_key)
+    _repair_sudoers(authority, account)
+    print(f"OK: recovery authorization healthy ({fingerprint})")
+
+
+def adopt_existing(expected_fingerprint: str) -> None:
+    if not FINGERPRINT_RE.fullmatch(expected_fingerprint):
+        raise RuntimeError("expected Master fingerprint must be an OpenSSH SHA256 fingerprint")
+    if ROLE_PATH.read_text(encoding="utf-8").strip() != "worker":
+        raise RuntimeError("recovery authorization migration is Worker-only")
+    state = _load_state()
+    if state.get("state") != "paired":
+        raise RuntimeError("this Worker is not currently paired")
+    ssh_user = state.get("ssh_user")
+    if not isinstance(ssh_user, str) or not USER_RE.fullmatch(ssh_user):
+        raise RuntimeError("paired SSH user is invalid")
+    if os.environ.get("SUDO_USER") != ssh_user:
+        raise RuntimeError("migration must be approved locally by the paired SSH user")
+    public_key, fingerprint = _validate_key_blob(state.get("master_key_blob"))
+    if not hmac.compare_digest(fingerprint, expected_fingerprint):
+        raise RuntimeError(
+            f"saved Master key fingerprint {fingerprint} does not match the locally approved fingerprint"
+        )
+    pairing_id = state.get("pairing_id")
+    worker = state.get("hostname")
+    master_ip = state.get("master_ip")
+    master_hostname = state.get("master_hostname", "")
+    if not isinstance(pairing_id, str) or not PAIRING_RE.fullmatch(pairing_id):
+        raise RuntimeError("paired generation ID is invalid")
+    if not isinstance(worker, str) or not HOST_RE.fullmatch(worker):
+        raise RuntimeError("paired Worker hostname is invalid")
+    try:
+        parsed_ip = ipaddress.ip_address(str(master_ip))
+    except ValueError as exc:
+        raise RuntimeError("paired Master IP is invalid") from exc
+    if not isinstance(parsed_ip, ipaddress.IPv4Address):
+        raise RuntimeError("paired Master must use IPv4 for recovery SSH")
+    if master_hostname and (not isinstance(master_hostname, str) or not HOST_RE.fullmatch(master_hostname)):
+        raise RuntimeError("paired Master hostname is invalid")
+    root_dir = AUTHORITY_PATH.parent
+    _safe_directory(root_dir, 0, private=True)
+    authority = {
+        "version": 1,
+        "pairing_id": pairing_id,
+        "worker_hostname": worker,
+        "ssh_user": ssh_user,
+        "master_hostname": master_hostname,
+        "master_ip": str(parsed_ip),
+        "master_key_blob": state["master_key_blob"],
+        "master_public_key": public_key,
+        "master_key_fingerprint": fingerprint,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if AUTHORITY_PATH.exists() or AUTHORITY_PATH.is_symlink():
+        existing = _load_authority()
+        _validated_authority(existing)
+        immutable_fields = (
+            "version", "pairing_id", "worker_hostname", "ssh_user",
+            "master_hostname", "master_ip", "master_key_blob",
+            "master_public_key", "master_key_fingerprint",
+        )
+        if any(existing.get(key) != authority.get(key) for key in immutable_fields):
+            raise RuntimeError("a different root recovery authority already exists; refusing replacement")
+        authority = existing
+    else:
+        _atomic_write(
+            AUTHORITY_PATH,
+            json.dumps(authority, sort_keys=True) + "\n",
+            0o600,
+            0,
+            0,
+        )
+    repair()
+
+
+def main() -> None:
+    if os.geteuid() != 0:
+        fail("helper must run as root")
+    try:
+        if len(sys.argv) == 2 and sys.argv[1] == "--repair":
+            repair()
+            return
+        if len(sys.argv) == 3 and sys.argv[1] == "--adopt-existing":
+            adopt_existing(sys.argv[2])
+            return
+        fail("usage: lattice-recovery-auth-exec --repair | --adopt-existing SHA256:FINGERPRINT")
+    except (OSError, KeyError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        fail(str(exc))
+
+
+if __name__ == "__main__":
+    main()

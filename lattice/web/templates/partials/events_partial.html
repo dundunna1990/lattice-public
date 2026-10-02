@@ -1,0 +1,20 @@
+
+<div id="events-content" data-protected-panel hx-get="/api/events/partial?limit=50" hx-trigger="every 15s" hx-target="#events-content" hx-swap="outerHTML">
+    <div class="card">
+        <div class="table-container">
+            <table>
+                <thead><tr><th>Time</th><th>Severity</th><th>Message</th><th>Worker</th></tr></thead>
+                <tbody>
+                {% for e in events %}
+                <tr>
+                    <td>{{ e.timestamp }}</td>
+                    <td><span class="status-badge {{ e.severity }}">{{ e.severity }}</span></td>
+                    <td>{{ e.message }}</td>
+                    <td>{{ e.worker }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>

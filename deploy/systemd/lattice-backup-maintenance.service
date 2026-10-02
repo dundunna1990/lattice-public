@@ -1,0 +1,22 @@
+[Unit]
+Description=Lattice backup retention and verification maintenance
+After=network-online.target lattice-init.service
+Wants=network-online.target
+ConditionPathExists=/etc/lattice/role
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+Nice=15
+IOSchedulingClass=idle
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.backup.maintenance_dispatcher
+TimeoutStartSec=6h
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes

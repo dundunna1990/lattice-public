@@ -1,0 +1,19 @@
+[Unit]
+Description=Lattice init: prepare dirs, migrate DB, validate config
+Requires=lattice-boot-recovery.service
+After=network-online.target lattice-boot-recovery.service
+Before=lattice-master.service lattice-worker.service
+
+[Service]
+Type=oneshot
+# This preparation phase creates root-owned settings, keys, and tokens before
+# the unprivileged daemons start. bootstrap_prepare explicitly gives runtime
+# database/log/socket paths back to the lattice account.
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.core.bootstrap_prepare
+# The role units require this successful preparation state. The setup
+# lifecycle explicitly restarts it on every role change and after upgrades.
+RemainAfterExit=yes
+TimeoutStartSec=60

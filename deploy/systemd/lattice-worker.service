@@ -1,0 +1,49 @@
+[Unit]
+Description=Lattice Worker Daemon
+Requires=lattice-init.service
+After=lattice-init.service network-online.target
+Wants=network-online.target
+Wants=lattice-network-assignment.path
+Wants=lattice-credential-revoke.path
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+
+[Service]
+Type=notify
+User=lattice
+Group=lattice
+EnvironmentFile=-/etc/lattice/environment
+ExecCondition=/usr/bin/grep -qx worker /etc/lattice/role
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.worker.main
+ExecStartPost=/opt/lattice/venv/bin/python -m lattice.core.release_convergence
+Restart=on-failure
+RestartSec=5s
+WatchdogSec=30
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
+LimitNOFILE=65536
+
+# Hardening (worker needs fewer privileges than master)
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+# The worker may elevate only through two exact root-owned helpers listed in
+# /etc/sudoers.d/lattice-action-exec. All ordinary process privileges remain
+# those of the unprivileged lattice account.
+NoNewPrivileges=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

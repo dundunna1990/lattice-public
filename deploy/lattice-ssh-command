@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Forced SSH command for the Lattice key; never opens a general shell."""
+import os
+import subprocess
+import sys
+
+ALLOWED = {"status lattice-worker.service", "restart lattice-worker.service"}
+original = os.environ.get("SSH_ORIGINAL_COMMAND", "")
+if original not in ALLOWED:
+    print("REFUSED: this key may only check or restart lattice-worker.service", file=sys.stderr)
+    raise SystemExit(3)
+action, target = original.split()
+result = subprocess.run(
+    ["sudo", "-n", "/opt/lattice/bin/lattice-action-exec", action, target],
+    check=False,
+)
+raise SystemExit(result.returncode)

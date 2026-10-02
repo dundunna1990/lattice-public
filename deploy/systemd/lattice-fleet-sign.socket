@@ -1,0 +1,12 @@
+[Unit]
+Description=Lattice root-isolated fleet signing socket
+PartOf=lattice-master.service
+
+[Socket]
+ListenStream=/run/lattice/fleet-sign.sock
+SocketUser=root
+SocketGroup=lattice
+SocketMode=0660
+RemoveOnStop=yes
+Accept=yes
+MaxConnections=16

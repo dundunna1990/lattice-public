@@ -1,0 +1,3 @@
+#!/bin/sh
+# Root-owned exact entry point for one signed Lattice file-transport state.
+exec /opt/lattice/venv/bin/python -m lattice.file_access.transport_apply "$@"

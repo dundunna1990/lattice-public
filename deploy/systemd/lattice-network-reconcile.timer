@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically reconcile the Lattice machine-owned network address
+
+[Timer]
+OnCalendar=*-*-* *:*:00/20
+AccuracySec=5s
+Persistent=true
+Unit=lattice-network-reconcile.service
+
+[Install]
+WantedBy=timers.target

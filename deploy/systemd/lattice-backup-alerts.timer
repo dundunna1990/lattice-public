@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically evaluate Lattice backup protection alerts
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=15m
+AccuracySec=1m
+Persistent=true
+Unit=lattice-backup-alerts.service
+
+[Install]
+WantedBy=timers.target

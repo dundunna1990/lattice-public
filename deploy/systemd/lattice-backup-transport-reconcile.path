@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for a signed Lattice backup transport reconciliation request
+Wants=lattice-backup-transport-reconcile.service
+
+[Path]
+PathChanged=/var/lib/lattice/backup-transport-request.json
+Unit=lattice-backup-transport-reconcile.service
+
+[Install]
+WantedBy=multi-user.target

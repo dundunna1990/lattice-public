@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Lattice Nodes
+GenericName=Lattice Nodes
+Comment=Open the computers connected through Lattice
+Exec=/opt/lattice/bin/lattice-desktop-open
+Icon=/usr/share/pixmaps/lattice-nodes.png
+Terminal=false
+Categories=Network;Utility;FileManager;
+StartupNotify=true
+X-Lattice-Managed=true

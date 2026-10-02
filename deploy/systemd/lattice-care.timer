@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Lattice Daily Care once per day
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=45m
+Persistent=true
+Unit=lattice-care.service
+
+[Install]
+WantedBy=timers.target

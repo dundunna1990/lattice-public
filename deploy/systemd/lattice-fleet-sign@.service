@@ -1,0 +1,31 @@
+[Unit]
+Description=Lattice root-isolated fleet signing request
+Requires=lattice-init.service
+After=lattice-init.service
+ConditionPathExists=/etc/lattice/fleet-signing/fleet_signing_ed25519
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/opt/lattice/venv/bin/python -m lattice.file_access.fleet_signing
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStartSec=30
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes

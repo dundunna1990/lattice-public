@@ -1,0 +1,25 @@
+[Unit]
+Description=Sign current Lattice backup assignments
+After=lattice-init.service
+ConditionPathExists=/etc/lattice/role
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+ExecCondition=/usr/bin/grep -Fxq master /etc/lattice/role
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.backup.assignment_state
+TimeoutStartSec=45
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/lattice /etc/lattice/backup-ssh
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes

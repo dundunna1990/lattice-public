@@ -1,0 +1,31 @@
+[Unit]
+Description=Lattice Dedicated SFTP-Only Backup Service
+After=network.target local-fs.target
+ConditionPathExists=/etc/lattice/backup-ssh/sshd_config
+ConditionPathExists=/srv/lattice-backup-chroot
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /run/sshd
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStartPre=/usr/sbin/sshd -t -f /etc/lattice/backup-ssh/sshd_config
+ExecStart=/usr/sbin/sshd -D -e -f /etc/lattice/backup-ssh/sshd_config
+ExecStartPost=/opt/lattice/venv/bin/python -m lattice.core.release_convergence
+Restart=on-failure
+RestartSec=3s
+TimeoutStartSec=30
+TimeoutStopSec=20
+KillMode=mixed
+RuntimeDirectory=lattice-backup-sshd
+RuntimeDirectoryMode=0755
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

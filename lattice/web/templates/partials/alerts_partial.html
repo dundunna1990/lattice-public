@@ -1,0 +1,25 @@
+
+<div id="alerts-content" data-protected-panel hx-get="/api/alerts/partial" hx-trigger="alertsRefresh from:body, every 15s" hx-target="#alerts-content" hx-swap="outerHTML">
+    {% if alerts %}
+    <section class="attention-list" aria-label="All active alerts">
+        {% for a in alerts %}
+        <article class="attention-card {{ a.severity }}">
+            <div class="alert-topline">
+                <h2>{{ a.worker }} — {{ a.title }}</h2>
+                <span class="status-badge {{ a.severity }}">{{ a.severity }}</span>
+            </div>
+            <p class="alert-copy">{{ a.message }}</p>
+            <p class="alert-meta">Detected: {{ a.fired_at }}</p>
+            <p class="alert-action">{% if 'repair needs attention' in a.title | lower %}Lattice action: It tried one safe restart, then stopped because recovery was not confirmed.{% else %}Lattice action: This needs your review; no unsafe automatic change was made.{% endif %}</p>
+            <div class="button-row">
+                {% if a.worker != 'Master' %}<button class="secondary outline compact" hx-post="/api/workers/{{ a.worker }}/recheck" hx-swap="none" hx-disable-elt="this">Recheck now</button>{% endif %}
+                {% if a.worker != 'Master' %}<a href="/worker/{{ a.worker }}" role="button" class="secondary outline compact">View details</a>{% endif %}
+                <button class="secondary outline compact" hx-post="/api/alerts/{{ a.id }}/ack" hx-swap="none" hx-disable-elt="this">Acknowledge</button>
+            </div>
+        </article>
+        {% endfor %}
+    </section>
+    {% else %}
+    <section class="panel"><p class="empty-state">There are no active alerts.</p></section>
+    {% endif %}
+</div>

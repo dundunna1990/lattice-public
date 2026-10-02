@@ -1,0 +1,30 @@
+[Unit]
+Description=Execute one staged Lattice backup restore operation
+After=network-online.target lattice-init.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/lattice/backup-restore-request.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.backup.restore_request
+TimeoutStartSec=12h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=25
+IOWeight=25
+PrivateTmp=yes
+ProtectHome=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077

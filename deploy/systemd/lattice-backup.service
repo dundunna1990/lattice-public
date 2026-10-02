@@ -1,0 +1,32 @@
+[Unit]
+Description=Lattice scheduled and catch-up backup dispatcher
+After=local-fs.target network-online.target lattice-init.service
+Wants=network-online.target
+ConditionPathExists=/etc/lattice/role
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/lattice/environment
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.backup.dispatcher
+ExecStartPost=/opt/lattice/venv/bin/python -m lattice.core.release_convergence
+TimeoutStartSec=12h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=25
+IOWeight=25
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077

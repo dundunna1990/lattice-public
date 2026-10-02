@@ -1,0 +1,5 @@
+# This file is installed as /etc/lattice/environment.
+# It is the single source of the runtime paths used by every Lattice service.
+LATTICE_CONFIG_PATH=/etc/lattice/lattice.toml
+LATTICE_DB_PATH=/var/lib/lattice/state.sqlite
+LATTICE_SOCKET_PATH=/run/lattice/master.sock

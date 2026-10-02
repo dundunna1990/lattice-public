@@ -1,0 +1,4 @@
+#!/bin/sh
+# Root-owned entry point.  The Python module enforces the exact request path,
+# verifies this is the one pairing-time assignment, and performs rollback.
+exec /opt/lattice/venv/bin/python -m lattice.ip_change.worker_assignment "$@"

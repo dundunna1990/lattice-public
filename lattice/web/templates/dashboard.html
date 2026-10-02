@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">Lattice</p>
+        <h1>Your computers</h1>
+        <p class="muted">A simple view of what needs your attention.</p>
+    </div>
+</div>
+<div id="dashboard-content" data-protected-panel hx-get="/api/dashboard" hx-trigger="load, dashboardRefresh from:body, every 15s" hx-target="#dashboard-content" hx-swap="outerHTML">
+    <div class="loading">Connecting to your Lattice master…</div>
+</div>
+{% endblock %}

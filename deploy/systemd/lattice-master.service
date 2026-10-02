@@ -1,0 +1,51 @@
+[Unit]
+Description=Lattice Master Daemon
+Documentation=https://github.com/yourorg/lattice
+Requires=lattice-init.service lattice-fleet-sign.socket
+After=lattice-init.service lattice-fleet-sign.socket network-online.target
+Wants=network-online.target
+# A machine is one role only. ExecCondition is the runtime role guard.
+# Do not use Conflicts= between role services: systemd processes conflicts
+# before ExecCondition, so starting the wrong role could stop the right one.
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+
+[Service]
+Type=notify
+User=lattice
+Group=lattice
+EnvironmentFile=-/etc/lattice/environment
+ExecCondition=/usr/bin/grep -qx master /etc/lattice/role
+ExecStartPre=/opt/lattice/venv/bin/python -m lattice.core.runtime_environment
+ExecStart=/opt/lattice/venv/bin/python -m lattice.daemon.main
+ExecStartPost=/opt/lattice/venv/bin/python -m lattice.core.release_convergence
+Restart=on-failure
+RestartSec=5s
+WatchdogSec=30
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Hardening
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target
