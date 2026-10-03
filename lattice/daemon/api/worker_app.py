@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
 import asyncio
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,42 @@ async def list_services():
         "worker_id": socket.gethostname(),
         "services": snapshot["services"],
     }
+
+
+@app.get("/v1/verification", dependencies=[Depends(verify_token)])
+async def live_verification():
+    """Return bounded read-only evidence for fleet-wide verification."""
+    from lattice.verification.node import VerificationError, collect_local_verification
+    try:
+        return await asyncio.to_thread(collect_local_verification, "worker")
+    except VerificationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/v1/verification/clear", dependencies=[Depends(verify_token)])
+async def clear_verified_local_state():
+    """Ask the narrow root helper to clear only freshly proven stale state."""
+    command = [
+        "/usr/bin/sudo", "-n",
+        "/opt/lattice/bin/lattice-verification-control", "clear-local",
+    ]
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run, command, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(status_code=503, detail=f"verification clear failed: {exc}") from exc
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=503, detail="verification clear returned invalid output") from exc
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=409,
+            detail=str(payload.get("error") or result.stderr or "verification clear was refused"),
+        )
+    return payload
 
 
 @app.post("/v1/backups/restore", status_code=202, dependencies=[Depends(verify_token)])

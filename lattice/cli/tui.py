@@ -3701,6 +3701,93 @@ def _run_local_care(stdscr) -> None:
     _control_result(stdscr, title, [message])
 
 
+def _verification_control(action: str, *, timeout: int = 90) -> dict:
+    if action not in {"verify-fleet", "clear-resolved"}:
+        raise RuntimeError("Unsupported fleet verification action")
+    result = subprocess.run(
+        ["/usr/bin/sudo", "-n", "/opt/lattice/bin/lattice-verification-control", action],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    raw = (result.stdout or "").strip()
+    try:
+        payload = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError((result.stderr or raw or "Fleet verification returned invalid output").strip()) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Fleet verification returned an invalid response")
+    if result.returncode not in {0, 2}:
+        raise RuntimeError((result.stderr or payload.get("error") or "Fleet verification failed").strip())
+    return payload
+
+
+def _fleet_verification_lines(report: dict) -> List[str]:
+    status = str(report.get("status") or "blocked").upper()
+    lines = [
+        f"Fleet verification: {status}",
+        f"Fleet generation: {report.get('fleet_generation') if report.get('fleet_generation') is not None else 'unknown'}",
+        "",
+        "ACTIVE FLEET",
+    ]
+    for node in list(report.get("nodes") or []):
+        marker = "OK" if node.get("status") == "healthy" else "BLOCKED"
+        lines.append(f"{str(node.get('hostname') or 'unknown')[:24]:24} {marker}")
+        for item in list(node.get("stale_failed_units") or [])[:4]:
+            lines.append(f"  resolved stale flag: {item.get('unit')}")
+        for reason in list(node.get("blockers") or [])[:3]:
+            lines.append(f"  {str(reason)[:110]}")
+    alerts = list(report.get("alerts") or [])
+    if alerts:
+        lines.extend(["", "ACTIVE ALERT CHECKS"])
+        for item in alerts[:12]:
+            verdict = str(item.get("verdict") or "unknown").upper()
+            lines.append(f"{verdict:8} {str(item.get('title') or 'Alert')[:80]}")
+            if item.get("reason"):
+                lines.append(f"  {str(item.get('reason'))[:110]}")
+    blockers = list(report.get("blockers") or [])
+    if blockers:
+        lines.extend(["", "CLEAR BLOCKED"])
+        for reason in blockers[:10]:
+            lines.append(f"  {str(reason)[:112]}")
+    elif report.get("can_clear"):
+        lines.extend(["", "Every active fleet member is verified. Proven-resolved state may be cleared."])
+    else:
+        lines.extend(["", "Fleet is healthy. There is no proven-resolved state waiting to be cleared."])
+    return lines
+
+
+def _fleet_verify_clear_flow(stdscr, status_loader=None) -> None:
+    _flow_message(stdscr, "VERIFY FLEET", ["Checking every active Lattice computer..."])
+    try:
+        report = _verification_control("verify-fleet")
+    except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+        _control_result(stdscr, "VERIFY FLEET BLOCKED", [str(exc)])
+        return
+    lines = _fleet_verification_lines(report)
+    if report.get("status") != "pass" or not report.get("can_clear"):
+        _control_result(stdscr, "VERIFY FLEET", lines)
+        return
+    choice = _control_menu(
+        stdscr,
+        "VERIFY FLEET",
+        ["Clear Proven Resolved", "Back"],
+        intro=lines + ["", "Clear will re-run verification before changing anything."],
+    )
+    if choice != 0:
+        return
+    _flow_message(stdscr, "CLEAR PROVEN RESOLVED", ["Re-verifying the entire active fleet..."])
+    try:
+        result = _verification_control("clear-resolved")
+    except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+        _control_result(stdscr, "CLEAR BLOCKED", [str(exc)])
+        return
+    title = "FLEET HEALTHY" if result.get("clear_status") == "cleared" else "CLEAR BLOCKED"
+    summary = _fleet_verification_lines(result)
+    summary.insert(1, f"Alerts resolved: {int(result.get('cleared_alerts') or 0)}")
+    _control_result(stdscr, title, summary)
+
+
 def _worker_care_flow(stdscr, current: LatticeStatus, status_loader=None) -> None:
     while True:
         worker = current.health.get("worker", {})
@@ -3740,10 +3827,10 @@ def _master_care_flow(stdscr, current: LatticeStatus, status_loader=None) -> Non
         choice = _control_menu(
             stdscr,
             "DAILY CARE",
-            ["Master Care Details", "Run Daily Care Now on Master", "Back"],
+            ["Master Care Details", "Run Daily Care Now on Master", "Verify Fleet & Clear Resolved", "Back"],
             intro=lines,
         )
-        if choice is None or choice == 2:
+        if choice is None or choice == 3:
             return
         if choice == 0:
             local = next(
@@ -3753,6 +3840,8 @@ def _master_care_flow(stdscr, current: LatticeStatus, status_loader=None) -> Non
             _control_result(stdscr, "MASTER DAILY CARE", _care_status_lines(local))
         elif choice == 1:
             _run_local_care(stdscr)
+        elif choice == 2:
+            _fleet_verify_clear_flow(stdscr, status_loader)
         if status_loader is not None:
             try:
                 current = status_loader()
@@ -4882,13 +4971,14 @@ def show_re_run_menu(stdscr, status: LatticeStatus,
                 (section_sep, curses.color_pair(1)),
                 (" ".join(action_text(i) for i in range(4)), curses.color_pair(3)),
                 (" ".join(action_text(i) for i in range(4, 9)), curses.color_pair(3)),
+                ("[V] Verify Fleet & Clear Resolved", curses.color_pair(3)),
                 ("↑/↓ Select  Enter Open  K/J Scroll  PgUp/PgDn Mesh  Q Exit", curses.color_pair(3)),
             ]
         else:
             footer_lines = [
                 (section_sep, curses.color_pair(1)),
                 ("".join(action_text(i, compact=True) for i in range(9)), curses.color_pair(3)),
-                ("↑/↓ Select   Enter Open   PgUp/PgDn Mesh   Q Exit", curses.color_pair(3)),
+                ("[V] Verify Fleet   ↑/↓ Select   Enter Open   Q Exit", curses.color_pair(3)),
             ]
 
         body_capacity = max(0, render_height - len(footer_lines))
@@ -4970,6 +5060,17 @@ def show_re_run_menu(stdscr, status: LatticeStatus,
             continue
         if key == curses.KEY_NPAGE:
             worker_offset = min(max_worker_offset, worker_offset + max(1, mesh_limit))
+            continue
+
+        if key in (ord('v'), ord('V')):
+            _fleet_verify_clear_flow(stdscr, status_loader)
+            if status_loader is not None:
+                try:
+                    current = status_loader()
+                    status_error = None
+                except Exception as exc:
+                    status_error = str(exc)
+            last_status_refresh = time.monotonic()
             continue
 
         direct = None

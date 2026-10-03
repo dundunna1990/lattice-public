@@ -80,3 +80,39 @@ def test_crypto_authorized_keys_hardening():
     from lattice.core.crypto.ssh import install_restricted_authorized_key
 
     assert callable(install_restricted_authorized_key)
+
+
+async def test_worker_verification_requires_auth(client):
+    response = await client.get("/v1/verification")
+    assert response.status_code == 401
+
+
+async def test_worker_verification_returns_live_bounded_report(client, mock_token):
+    headers = {"Authorization": "Bearer test_token_123"}
+    report = {
+        "node_id": "11111111-1111-4111-8111-111111111111",
+        "hostname": "worker-node",
+        "role": "worker",
+        "status": "healthy",
+        "blockers": [],
+        "stale_failed_units": [],
+    }
+    with patch("lattice.verification.node.collect_local_verification", return_value=report):
+        response = await client.get("/v1/verification", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["status"] == "healthy"
+
+
+async def test_worker_clear_uses_only_narrow_root_helper(client, mock_token):
+    headers = {"Authorization": "Bearer test_token_123"}
+    completed = _completed(
+        stdout='{"status":"cleared","reset_units":[],"care_run_id":9}\n'
+    )
+    with patch("lattice.daemon.api.worker_app.subprocess.run", return_value=completed) as run:
+        response = await client.post("/v1/verification/clear", headers=headers)
+    assert response.status_code == 200
+    command = run.call_args.args[0]
+    assert command == [
+        "/usr/bin/sudo", "-n",
+        "/opt/lattice/bin/lattice-verification-control", "clear-local",
+    ]

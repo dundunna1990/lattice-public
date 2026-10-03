@@ -561,6 +561,10 @@ if [[ -f "$SCRIPT_DIR/lattice-care-control" ]]; then
     install -m 0750 "$SCRIPT_DIR/lattice-care-control" "$INSTALL_ROOT/bin/lattice-care-control"
     chown root:"$OPERATOR_GROUP" "$INSTALL_ROOT/bin/lattice-care-control"
 fi
+if [[ -f "$SCRIPT_DIR/lattice-verification-control" ]]; then
+    install -m 0755 "$SCRIPT_DIR/lattice-verification-control" "$INSTALL_ROOT/bin/lattice-verification-control"
+    chown root:root "$INSTALL_ROOT/bin/lattice-verification-control"
+fi
 if [[ -f "$SCRIPT_DIR/lattice-desktop-open" ]]; then
     install -m 0755 "$SCRIPT_DIR/lattice-desktop-open" "$INSTALL_ROOT/bin/lattice-desktop-open"
     chown root:root "$INSTALL_ROOT/bin/lattice-desktop-open"
@@ -622,6 +626,13 @@ SUDOERS_FILE="/etc/sudoers.d/lattice-action-exec"
     printf '%s\n' '# Daily Care exposes only one local allowlisted run verb.'
     printf '%%%s ALL=(root) NOPASSWD: %s/bin/lattice-care-control run\n' \
         "$OPERATOR_GROUP" "$INSTALL_ROOT"
+    printf '%s\n' '# Fleet verification is read-only; clearing re-verifies before bounded changes.'
+    printf '%%%s ALL=(root) NOPASSWD: %s/bin/lattice-verification-control verify-fleet\n' \
+        "$OPERATOR_GROUP" "$INSTALL_ROOT"
+    printf '%%%s ALL=(root) NOPASSWD: %s/bin/lattice-verification-control clear-resolved\n' \
+        "$OPERATOR_GROUP" "$INSTALL_ROOT"
+    printf '%s ALL=(root) NOPASSWD: %s/bin/lattice-verification-control clear-local\n' \
+        "$LATTICE_USER" "$INSTALL_ROOT"
     printf '%s\n' '# Pairing and network helpers intentionally receive no daemon sudo access.'
     printf '%s\n' '# Pairing crosses root only through explicit local approval of one exact pending request.'
     printf '%s\n' '# Network changes remain root-only and separately authorized.'

@@ -553,16 +553,18 @@ def test_tall_80_column_dashboard_keeps_roomy_layout_and_bottom_controls(monkeyp
     assert "FILE / MOUNT" in all_writes and "SHELL" in all_writes and "ADMIN" in all_writes
     assert "● worker-node" in all_writes
     assert "● CONNECTED" in all_writes and "● READY" in all_writes
-    assert "[1] Add Computer" in rows[53]
-    assert "[2] Remove Computer" in rows[53]
-    assert "[3] Backups" in rows[53]
-    assert "[4] Settings" in rows[53]
-    assert "[5] Health Check" in rows[54]
-    assert "[6] FIX" in rows[54]
-    assert "[7] Reset Lattice" in rows[54]
-    assert "[8] Exit" in rows[54]
-    assert "K/J Scroll" in rows[55]
-    assert rows[55].endswith("Q Exit")
+    footer_text = "\n".join(rows[index] for index in sorted(rows) if index >= 50)
+    assert "[1] Add Computer" in footer_text
+    assert "[2] Remove Computer" in footer_text
+    assert "[3] Backups" in footer_text
+    assert "[4] Settings" in footer_text
+    assert "[5] Health Check" in footer_text
+    assert "[6] FIX" in footer_text
+    assert "[7] Reset Lattice" in footer_text
+    assert "[8] Exit" in footer_text
+    assert "[V] Verify Fleet & Clear Resolved" in footer_text
+    assert "K/J Scroll" in footer_text
+    assert "Q Exit" in footer_text
 
 
 

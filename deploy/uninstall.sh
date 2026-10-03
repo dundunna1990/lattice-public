@@ -540,6 +540,7 @@ done
 
 rm -f /etc/sudoers.d/lattice-action-exec
 rm -f /opt/lattice/bin/lattice-care-control 2>/dev/null || true
+rm -f /opt/lattice/bin/lattice-verification-control 2>/dev/null || true
 rm -f /etc/sudoers.d/lattice-shell-admin
 rm -f /etc/ssh/ssh_config.d/90-lattice-shell.conf
 rm -f /etc/sudoers.d/lattice-remote-heal-*

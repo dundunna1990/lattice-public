@@ -1,0 +1,7 @@
+#!/bin/sh
+# Root-owned narrow fleet verification/clear entry point.
+export LATTICE_CONFIG_PATH=/etc/lattice/lattice.toml
+export LATTICE_DB_PATH=/var/lib/lattice/state.sqlite
+export LATTICE_SOCKET_PATH=/run/lattice/master.sock
+cd /opt/lattice
+exec /opt/lattice/venv/bin/python -I -m lattice.verification.control "$@"
