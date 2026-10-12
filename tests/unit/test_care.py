@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from lattice.care import runner
+from lattice.care import health, runner
 from lattice.care.observations import normalize_care_observation
 from lattice.care.safety import CareSafetyError, assert_allowed_delete
 from lattice.core.migrations import run_migrations
@@ -289,3 +289,190 @@ def test_failed_maintenance_action_makes_run_attention(tmp_path, monkeypatch):
 
     assert result["status"] == "attention"
     assert result["attention_count"] == 1
+
+
+def test_security_updates_defer_when_dpkg_is_unhealthy(monkeypatch):
+    calls = []
+    records = []
+    monkeypatch.setattr(runner.Path, "exists", lambda self: True)
+    monkeypatch.setattr(
+        runner,
+        "_package_manager_is_healthy",
+        lambda: (False, "packages are unpacked but not configured"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run",
+        lambda *args, **kwargs: calls.append(args[0]) or pytest.fail(
+            "No package command should run after an unhealthy dpkg preflight"
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_action",
+        lambda run_id, name, result, **kwargs: records.append(
+            (name, result, kwargs.get("detail"))
+        ),
+    )
+
+    runner._security_updates(9)
+
+    assert calls == []
+    assert records[0][0:2] == ("security_updates", "deferred")
+    assert "Package manager is not healthy" in records[0][2]
+
+
+def test_package_manager_health_uses_dpkg_audit(monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "_run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="The following packages are unpacked but not yet configured:\n",
+            stderr="",
+        ),
+    )
+
+    healthy, detail = runner._package_manager_is_healthy()
+
+    assert healthy is False
+    assert "not yet configured" in detail
+
+
+def test_daily_care_service_allows_kernel_module_security_updates():
+    service = Path("deploy/systemd/lattice-care.service").read_text()
+    assert "ProtectKernelModules=no" in service
+    assert "ProtectKernelModules=yes" not in service
+
+
+def test_stale_networkmanager_wait_online_failure_is_suppressed(monkeypatch):
+    responses = iter(
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "NetworkManager-wait-online.service loaded failed failed "
+                    "Network Manager Wait Online\n"
+                ),
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(health, "_run", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(
+        health.shutil, "disk_usage", lambda path: SimpleNamespace(total=100, free=50)
+    )
+    monkeypatch.setattr(
+        health.os, "statvfs", lambda path: SimpleNamespace(f_files=100, f_ffree=100)
+    )
+    monkeypatch.setattr(health.Path, "exists", lambda self: False)
+    monkeypatch.setattr(health.Path, "glob", lambda self, pattern: [])
+
+    findings = health.scan_health()
+
+    assert not any(item["code"] == "systemd.failed" for item in findings)
+
+
+def test_networkmanager_wait_online_failure_remains_when_offline(monkeypatch):
+    responses = iter(
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "NetworkManager-wait-online.service loaded failed failed "
+                    "Network Manager Wait Online\n"
+                ),
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
+            SimpleNamespace(returncode=1, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(health, "_run", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(
+        health.shutil, "disk_usage", lambda path: SimpleNamespace(total=100, free=50)
+    )
+    monkeypatch.setattr(
+        health.os, "statvfs", lambda path: SimpleNamespace(f_files=100, f_ffree=100)
+    )
+    monkeypatch.setattr(health.Path, "exists", lambda self: False)
+    monkeypatch.setattr(health.Path, "glob", lambda self, pattern: [])
+
+    findings = health.scan_health()
+
+    assert any(item["code"] == "systemd.failed" for item in findings)
+
+
+def test_db_write_with_retry_retries_busy_then_succeeds(monkeypatch):
+    sleeps = []
+    attempts = []
+    class FakeConn:
+        def __init__(self, n):
+            self.n = n
+        def commit(self):
+            pass
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+    counter = {"n": 0}
+    def get_conn():
+        counter["n"] += 1
+        return FakeConn(counter["n"])
+    monkeypatch.setattr(runner, "get_db_connection", get_conn)
+    monkeypatch.setattr(runner.time, "sleep", lambda value: sleeps.append(value))
+    def callback(conn):
+        attempts.append(conn.n)
+        if conn.n < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    assert runner._db_write_with_retry("fixture", callback) == "ok"
+    assert attempts == [1, 2, 3]
+    assert sleeps == [1.0, 2.0]
+
+
+def test_db_write_with_retry_fails_fast_on_non_busy_error(monkeypatch):
+    class FakeConn:
+        def commit(self):
+            pass
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+    monkeypatch.setattr(runner, "get_db_connection", lambda: FakeConn())
+    slept = []
+    monkeypatch.setattr(runner.time, "sleep", lambda value: slept.append(value))
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        runner._db_write_with_retry(
+            "fixture",
+            lambda conn: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")),
+        )
+
+    assert slept == []
+
+
+def test_db_write_with_retry_safe_stops_after_bounded_busy_retries(monkeypatch):
+    class FakeConn:
+        def commit(self):
+            pass
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+    monkeypatch.setattr(runner, "get_db_connection", lambda: FakeConn())
+    slept = []
+    monkeypatch.setattr(runner.time, "sleep", lambda value: slept.append(value))
+
+    with pytest.raises(runner.CareRunError, match="remained busy"):
+        runner._db_write_with_retry(
+            "fixture",
+            lambda conn: (_ for _ in ()).throw(sqlite3.OperationalError("database is busy")),
+        )
+
+    assert slept == [1.0, 2.0]
