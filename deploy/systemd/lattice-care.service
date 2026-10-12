@@ -18,7 +18,8 @@ IOSchedulingClass=idle
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
+# Security-only updates may legitimately install signed kernel modules.
+ProtectKernelModules=no
 ProtectControlGroups=yes
 RestrictRealtime=yes
 LockPersonality=yes

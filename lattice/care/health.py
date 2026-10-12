@@ -16,6 +16,18 @@ def _run(command: list[str], timeout: int = 15) -> subprocess.CompletedProcess[s
     return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
 
 
+def _network_wait_online_is_stale() -> bool:
+    """True when the boot-time wait unit failed but networking is healthy now."""
+    try:
+        manager = _run(["/usr/bin/systemctl", "is-active", "NetworkManager.service"])
+        if manager.returncode != 0 or manager.stdout.strip() != "active":
+            return False
+        online = _run(["/usr/bin/nm-online", "-s", "-q", "--timeout=5"], timeout=7)
+        return online.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def scan_health(*, disk_warning_percent: int = 80, disk_critical_percent: int = 90) -> list[dict]:
     findings: list[dict] = []
     usage = shutil.disk_usage("/")
@@ -58,6 +70,10 @@ def scan_health(*, disk_warning_percent: int = 80, disk_critical_percent: int = 
         failed = [
             line.strip() for line in failed if line.strip() and "lattice-care.service" not in line
         ]
+        if _network_wait_online_is_stale():
+            failed = [
+                line for line in failed if "NetworkManager-wait-online.service" not in line
+            ]
         if failed:
             findings.append(
                 _finding(
