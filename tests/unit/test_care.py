@@ -405,3 +405,74 @@ def test_networkmanager_wait_online_failure_remains_when_offline(monkeypatch):
     findings = health.scan_health()
 
     assert any(item["code"] == "systemd.failed" for item in findings)
+
+
+def test_db_write_with_retry_retries_busy_then_succeeds(monkeypatch):
+    sleeps = []
+    attempts = []
+    class FakeConn:
+        def __init__(self, n):
+            self.n = n
+        def commit(self):
+            pass
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+    counter = {"n": 0}
+    def get_conn():
+        counter["n"] += 1
+        return FakeConn(counter["n"])
+    monkeypatch.setattr(runner, "get_db_connection", get_conn)
+    monkeypatch.setattr(runner.time, "sleep", lambda value: sleeps.append(value))
+    def callback(conn):
+        attempts.append(conn.n)
+        if conn.n < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    assert runner._db_write_with_retry("fixture", callback) == "ok"
+    assert attempts == [1, 2, 3]
+    assert sleeps == [1.0, 2.0]
+
+
+def test_db_write_with_retry_fails_fast_on_non_busy_error(monkeypatch):
+    class FakeConn:
+        def commit(self):
+            pass
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+    monkeypatch.setattr(runner, "get_db_connection", lambda: FakeConn())
+    slept = []
+    monkeypatch.setattr(runner.time, "sleep", lambda value: slept.append(value))
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        runner._db_write_with_retry(
+            "fixture",
+            lambda conn: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")),
+        )
+
+    assert slept == []
+
+
+def test_db_write_with_retry_safe_stops_after_bounded_busy_retries(monkeypatch):
+    class FakeConn:
+        def commit(self):
+            pass
+        def rollback(self):
+            pass
+        def close(self):
+            pass
+    monkeypatch.setattr(runner, "get_db_connection", lambda: FakeConn())
+    slept = []
+    monkeypatch.setattr(runner.time, "sleep", lambda value: slept.append(value))
+
+    with pytest.raises(runner.CareRunError, match="remained busy"):
+        runner._db_write_with_retry(
+            "fixture",
+            lambda conn: (_ for _ in ()).throw(sqlite3.OperationalError("database is busy")),
+        )
+
+    assert slept == [1.0, 2.0]
