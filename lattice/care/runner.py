@@ -265,11 +265,33 @@ def _unattended_policy_is_security_only(
     )
 
 
+def _package_manager_is_healthy() -> tuple[bool, str | None]:
+    """Return whether dpkg is in a safe state for automatic updates."""
+    audit = _run(["/usr/bin/dpkg", "--audit"], timeout=60)
+    if audit.returncode != 0:
+        detail = (audit.stderr or audit.stdout or "dpkg --audit failed").strip()
+        return False, detail[-1000:]
+    detail = (audit.stdout or "").strip()
+    if detail:
+        return False, detail[-1000:]
+    return True, None
+
+
 def _security_updates(run_id: int) -> None:
     binary = Path("/usr/bin/unattended-upgrade")
     if not binary.exists():
         _record_action(
             run_id, "security_updates", "deferred", detail="unattended-upgrades is unavailable"
+        )
+        return
+    healthy, package_detail = _package_manager_is_healthy()
+    if not healthy:
+        _record_action(
+            run_id,
+            "security_updates",
+            "deferred",
+            detail="Package manager is not healthy; automatic security updates were skipped. "
+            + str(package_detail or ""),
         )
         return
     if not _unattended_policy_is_security_only():
