@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import time
+from collections.abc import Callable
+from typing import TypeVar
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,12 +21,14 @@ from lattice.care.safety import (
     care_run_lock,
 )
 from lattice.core.config import load_config
-from lattice.core.db import get_db_connection
+from lattice.core.db import get_db_connection, is_sqlite_busy_error
 
 CRASH_ROOT = Path("/var/crash")
 CRASH_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
 MAX_PATH_DELETE_BYTES = 2 * 1024**3
 MAX_RUN_PATH_DELETE_BYTES = 4 * 1024**3
+_DB_RETRY_DELAYS_SECONDS = (1.0, 2.0)
+_T = TypeVar("_T")
 _KERNEL_RE = re.compile(
     r"^linux-(?:image|image-unsigned|headers|modules|modules-extra|tools|cloud-tools)-[0-9].*$"
 )
@@ -44,19 +49,46 @@ def _run(command: list[str], *, timeout: int = 1800) -> subprocess.CompletedProc
         raise CareRunError(f"Could not run {command[0]}: {exc}") from exc
 
 
+def _db_write_with_retry(
+    operation: str, callback: Callable[[sqlite3.Connection], _T]
+) -> _T:
+    """Run one Daily Care database write with bounded busy/locked retries."""
+    attempts = len(_DB_RETRY_DELAYS_SECONDS) + 1
+    for attempt in range(attempts):
+        conn = get_db_connection()
+        try:
+            result = callback(conn)
+            conn.commit()
+            return result
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            if not is_sqlite_busy_error(exc):
+                raise
+            if attempt >= len(_DB_RETRY_DELAYS_SECONDS):
+                raise CareRunError(
+                    "Daily Care database remained busy while "
+                    f"{operation} after {attempts} attempts"
+                ) from exc
+        finally:
+            conn.close()
+        time.sleep(_DB_RETRY_DELAYS_SECONDS[attempt])
+    raise AssertionError("unreachable")
+
+
 def _record_action(
     run_id: int, name: str, result: str, *, reclaimed: int = 0, detail: str | None = None
 ) -> None:
-    conn = get_db_connection()
-    try:
+    def _write(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT INTO care_actions"
             "(run_id,operation,result,bytes_reclaimed,detail) VALUES(?,?,?,?,?)",
             (run_id, name, result, max(0, int(reclaimed)), detail[:1000] if detail else None),
         )
-        conn.commit()
-    finally:
-        conn.close()
+
+    _db_write_with_retry(f"recording action {name}", _write)
 
 
 def _care_plan(config, deferred_reason: str | None) -> list[str]:
@@ -78,8 +110,7 @@ def _care_plan(config, deferred_reason: str | None) -> list[str]:
 
 
 def _replace_findings(run_id: int, findings: list[dict]) -> None:
-    conn = get_db_connection()
-    try:
+    def _write(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE care_findings SET cleared_at=? WHERE cleared_at IS NULL", (_now(),))
         for item in findings:
             conn.execute(
@@ -96,9 +127,8 @@ def _replace_findings(run_id: int, findings: list[dict]) -> None:
                     _now(),
                 ),
             )
-        conn.commit()
-    finally:
-        conn.close()
+
+    _db_write_with_retry("recording health findings", _write)
 
 
 def _cleanup_crash_reports(run_id: int) -> int:
@@ -327,28 +357,25 @@ def run_daily_care(*, trigger: str = "scheduled") -> dict:
     if trigger not in {"scheduled", "manual"}:
         raise CareRunError("Daily Care trigger is invalid")
     started = _now()
-    conn = get_db_connection()
-    try:
+
+    def _start_run(conn: sqlite3.Connection) -> int:
         cursor = conn.execute(
             "INSERT INTO care_runs(started_at,trigger,status) VALUES(?,?,'attention')",
             (started, trigger),
         )
-        run_id = int(cursor.lastrowid)
-        conn.commit()
-    finally:
-        conn.close()
+        return int(cursor.lastrowid)
+
+    run_id = _db_write_with_retry("starting the care run", _start_run)
 
     config = load_config().care
     if not config.enabled:
-        conn = get_db_connection()
-        try:
+        def _mark_off(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "UPDATE care_runs SET finished_at=?,status='off' WHERE id=?",
                 (_now(), run_id),
             )
-            conn.commit()
-        finally:
-            conn.close()
+
+        _db_write_with_retry("marking Daily Care off", _mark_off)
         return {
             "run_id": run_id,
             "status": "off",
@@ -372,15 +399,14 @@ def run_daily_care(*, trigger: str = "scheduled") -> dict:
         else ("Backup/restore maintenance is active" if defer_backup else None)
     )
     plan = _care_plan(config, deferred_reason)
-    conn = get_db_connection()
-    try:
+
+    def _record_plan(conn: sqlite3.Connection) -> None:
         conn.execute(
             "UPDATE care_runs SET plan_json=? WHERE id=?",
             (json.dumps(plan, sort_keys=False, separators=(",", ":")), run_id),
         )
-        conn.commit()
-    finally:
-        conn.close()
+
+    _db_write_with_retry("recording the care plan", _record_plan)
     reclaimed = 0
     if deferred_reason:
         _record_action(run_id, "mutating_phase", "deferred", detail=deferred_reason)
@@ -428,16 +454,15 @@ def run_daily_care(*, trigger: str = "scheduled") -> dict:
         "critical" if critical else ("attention" if attention or deferred_reason else "healthy")
     )
     _replace_findings(run_id, findings)
-    conn = get_db_connection()
-    try:
+
+    def _finish_run(conn: sqlite3.Connection) -> None:
         conn.execute(
             "UPDATE care_runs SET finished_at=?,status=?,bytes_reclaimed=?,"
             "attention_count=?,critical_count=?,deferred_reason=? WHERE id=?",
             (_now(), status, reclaimed, attention, critical, deferred_reason, run_id),
         )
-        conn.commit()
-    finally:
-        conn.close()
+
+    _db_write_with_retry("finishing the care run", _finish_run)
     return {
         "run_id": run_id,
         "status": status,
