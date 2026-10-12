@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from lattice.care import runner
+from lattice.care import health, runner
 from lattice.care.observations import normalize_care_observation
 from lattice.care.safety import CareSafetyError, assert_allowed_delete
 from lattice.core.migrations import run_migrations
@@ -289,3 +289,119 @@ def test_failed_maintenance_action_makes_run_attention(tmp_path, monkeypatch):
 
     assert result["status"] == "attention"
     assert result["attention_count"] == 1
+
+
+def test_security_updates_defer_when_dpkg_is_unhealthy(monkeypatch):
+    calls = []
+    records = []
+    monkeypatch.setattr(runner.Path, "exists", lambda self: True)
+    monkeypatch.setattr(
+        runner,
+        "_package_manager_is_healthy",
+        lambda: (False, "packages are unpacked but not configured"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run",
+        lambda *args, **kwargs: calls.append(args[0]) or pytest.fail(
+            "No package command should run after an unhealthy dpkg preflight"
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_action",
+        lambda run_id, name, result, **kwargs: records.append(
+            (name, result, kwargs.get("detail"))
+        ),
+    )
+
+    runner._security_updates(9)
+
+    assert calls == []
+    assert records[0][0:2] == ("security_updates", "deferred")
+    assert "Package manager is not healthy" in records[0][2]
+
+
+def test_package_manager_health_uses_dpkg_audit(monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "_run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="The following packages are unpacked but not yet configured:\n",
+            stderr="",
+        ),
+    )
+
+    healthy, detail = runner._package_manager_is_healthy()
+
+    assert healthy is False
+    assert "not yet configured" in detail
+
+
+def test_daily_care_service_allows_kernel_module_security_updates():
+    service = Path("deploy/systemd/lattice-care.service").read_text()
+    assert "ProtectKernelModules=no" in service
+    assert "ProtectKernelModules=yes" not in service
+
+
+def test_stale_networkmanager_wait_online_failure_is_suppressed(monkeypatch):
+    responses = iter(
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "NetworkManager-wait-online.service loaded failed failed "
+                    "Network Manager Wait Online\n"
+                ),
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(health, "_run", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(
+        health.shutil, "disk_usage", lambda path: SimpleNamespace(total=100, free=50)
+    )
+    monkeypatch.setattr(
+        health.os, "statvfs", lambda path: SimpleNamespace(f_files=100, f_ffree=100)
+    )
+    monkeypatch.setattr(health.Path, "exists", lambda self: False)
+    monkeypatch.setattr(health.Path, "glob", lambda self, pattern: [])
+
+    findings = health.scan_health()
+
+    assert not any(item["code"] == "systemd.failed" for item in findings)
+
+
+def test_networkmanager_wait_online_failure_remains_when_offline(monkeypatch):
+    responses = iter(
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "NetworkManager-wait-online.service loaded failed failed "
+                    "Network Manager Wait Online\n"
+                ),
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
+            SimpleNamespace(returncode=1, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(health, "_run", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(
+        health.shutil, "disk_usage", lambda path: SimpleNamespace(total=100, free=50)
+    )
+    monkeypatch.setattr(
+        health.os, "statvfs", lambda path: SimpleNamespace(f_files=100, f_ffree=100)
+    )
+    monkeypatch.setattr(health.Path, "exists", lambda self: False)
+    monkeypatch.setattr(health.Path, "glob", lambda self, pattern: [])
+
+    findings = health.scan_health()
+
+    assert any(item["code"] == "systemd.failed" for item in findings)
