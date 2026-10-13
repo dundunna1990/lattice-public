@@ -272,28 +272,54 @@ def _kernel_cleanup(run_id: int) -> None:
     )
 
 
-def _unattended_policy_is_security_only(
-    path: Path = Path("/etc/apt/apt.conf.d/50unattended-upgrades"),
-) -> bool:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    active = []
-    for raw in text.splitlines():
-        line = raw.split("//", 1)[0].strip()
-        if line:
-            active.append(line)
-    joined = "\n".join(active).lower()
-    forbidden = (
-        "${distro_codename}-updates",
-        "${distro_codename}-proposed",
-        "${distro_codename}-backports",
-    )
-    return not any(item in joined for item in forbidden) and (
-        "security" in joined or "esm" in joined
-    )
+def _unattended_policy_is_security_only() -> bool:
+    """Validate the effective unattended-upgrades origin policy.
 
+    APT merges every file under apt.conf.d, so inspecting only
+    50unattended-upgrades can miss a later override. Fail closed unless every
+    effective allowed origin is either the base release pocket or explicitly
+    security/ESM scoped.
+    """
+    apt_config = Path("/usr/bin/apt-config")
+    if not apt_config.exists():
+        return False
+    result = _run([str(apt_config), "dump"], timeout=60)
+    if result.returncode != 0:
+        return False
+
+    allowed: list[str] = []
+    for raw in result.stdout.splitlines():
+        line = raw.strip()
+        lowered = line.lower()
+        if not (
+            lowered.startswith("unattended-upgrade::allowed-origins")
+            or lowered.startswith("unattended-upgrade::origins-pattern")
+        ):
+            continue
+        if '"' not in line:
+            continue
+        try:
+            value = line.split('"', 1)[1].rsplit('"', 1)[0].strip().lower()
+        except IndexError:
+            return False
+        if value:
+            allowed.append(value)
+
+    if not allowed:
+        return False
+
+    base_release = {
+        "${distro_id}:${distro_codename}",
+        "origin=${distro_id},codename=${distro_codename}",
+        "o=${distro_id},n=${distro_codename}",
+    }
+    for origin in allowed:
+        if "security" in origin or "esm" in origin:
+            continue
+        if origin in base_release:
+            continue
+        return False
+    return True
 
 def _package_manager_is_healthy() -> tuple[bool, str | None]:
     """Return whether dpkg is in a safe state for automatic updates."""
