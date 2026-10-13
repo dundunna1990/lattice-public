@@ -437,13 +437,16 @@ def test_networkmanager_wait_online_failure_remains_when_offline(monkeypatch):
 
 
 def test_health_reports_systemctl_command_failure(monkeypatch):
-    responses = iter(
-        [
-            SimpleNamespace(returncode=1, stdout="", stderr="systemctl failed"),
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-        ]
-    )
-    monkeypatch.setattr(health, "_run", lambda *args, **kwargs: next(responses))
+    def fake_run(command, **kwargs):
+        if command[:2] == ["/usr/bin/systemctl", "--failed"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="systemctl failed")
+        if command[:2] == ["/usr/bin/systemctl", "is-active"]:
+            return SimpleNamespace(returncode=1, stdout="inactive\n", stderr="")
+        if command[:2] == ["/usr/bin/dpkg", "--audit"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(health, "_run", fake_run)
     monkeypatch.setattr(
         health.shutil, "disk_usage", lambda path: SimpleNamespace(total=100, free=50)
     )
@@ -459,13 +462,16 @@ def test_health_reports_systemctl_command_failure(monkeypatch):
 
 
 def test_health_reports_dpkg_command_failure(monkeypatch):
-    responses = iter(
-        [
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-            SimpleNamespace(returncode=1, stdout="", stderr="dpkg failed"),
-        ]
-    )
-    monkeypatch.setattr(health, "_run", lambda *args, **kwargs: next(responses))
+    def fake_run(command, **kwargs):
+        if command[:2] == ["/usr/bin/systemctl", "--failed"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:2] == ["/usr/bin/systemctl", "is-active"]:
+            return SimpleNamespace(returncode=1, stdout="inactive\n", stderr="")
+        if command[:2] == ["/usr/bin/dpkg", "--audit"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="dpkg failed")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(health, "_run", fake_run)
     monkeypatch.setattr(
         health.shutil, "disk_usage", lambda path: SimpleNamespace(total=100, free=50)
     )
