@@ -9,7 +9,7 @@ Lattice version 1 supports Ubuntu and Linux Mint systems using NetworkManager. P
 Lattice installation requires a complete Git checkout because the installer stages only tracked release files and verifies the checkout boundary. Do not use GitHub's Download ZIP feature.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/dundunna1990/lattice-public.git
 cd lattice-public
 ```
 
