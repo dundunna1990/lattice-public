@@ -15,7 +15,7 @@ Lattice connects Ubuntu and Linux Mint computers on a trusted LAN using one **Ma
 - **Backups and restores** — source-owned Restic backups, staged restore workflows, and encrypted recovery-kit support
 - **Daily Care** — conservative maintenance and health checks with explicit safety boundaries
 - **Network reconciliation** — detect and reconcile supported NetworkManager state changes
-- **Operator TUI + CLI** — everyday fleet management from the terminal
+- **Read-only operator interface + TUI/CLI** — everyday fleet visibility and management from the terminal
 
 ## Architecture
 
