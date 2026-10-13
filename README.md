@@ -103,7 +103,7 @@ Examples:
 - Dedicated SSH transports use strict host-key verification.
 - Real-machine destructive tests are opt-in rather than part of normal test runs.
 
-Peer Home mounts are **intentionally read/write**. Writing through a peer mount changes the peer computer's real exported data.
+Peer Home mounts are **intentionally read/write**. Writing through a peer mount changes that peer's real Home directory.
 
 ## Documentation
 
