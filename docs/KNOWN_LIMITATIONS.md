@@ -9,7 +9,7 @@ Lattice v0.1.0 is a **public alpha**. It is usable for testing and small trusted
 - **Local name discovery matters** — some authenticated operations still depend on `.local`/mDNS resolution even when a known worker IP is available.
 - **Retry/idempotency hardening is incomplete** — mutating requests use client idempotency keys, but server-side deduplication is not yet enforced everywhere.
 - **Audit-chain startup handling is still being improved** — invalid audit-chain state is detected by the audit subsystem, but startup degraded-state handling is not yet as explicit as intended.
-- **Telegram authorization hardening remains** — callback actor/chat validation needs stronger enforcement before broad bot exposure.
+- **Optional notification integrations still need hardening** — some non-core notification paths are not ready for broad exposure and are not part of the recommended first-time setup.
 - **Installer coverage is still expanding** — clean-install behavior is tested and improved continuously, but not every minimal OS/hardware combination has been qualified.
 - **Restore and recovery paths deserve caution** — restore safety has been hardened, but interruption and recovery scenarios should still be tested in your own environment before relying on them for important data.
 - **Operator polish is ongoing** — rough edges, stale status displays, and confusing error presentation may still appear.
