@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import ctypes
+import errno
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -281,6 +283,46 @@ def _remove_placement_artifact(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+def _rename_noreplace(source: Path, destination: Path) -> None:
+    """Atomically place a restore only if the destination is still unused.
+
+    Lattice supports Linux only. renameat2(RENAME_NOREPLACE) closes the
+    check-then-rename race that would otherwise let Keep Both/Elsewhere
+    overwrite a file created after the destination was selected.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise BackupRestoreWorkflowError(
+            "Safe no-overwrite restore placement is unavailable on this system"
+        )
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        -100,  # AT_FDCWD
+        os.fsencode(source),
+        -100,  # AT_FDCWD
+        os.fsencode(destination),
+        1,  # RENAME_NOREPLACE
+    )
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        raise BackupRestoreWorkflowError(
+            "Restore destination appeared during placement; nothing was overwritten"
+        )
+    raise BackupRestoreWorkflowError(
+        f"Could not safely place restored data: {os.strerror(error)}"
+    )
+
+
 def _recover_interrupted_replace(
     destination: Path, rollback_path: Path, temporary_destination: Path
 ) -> None:
@@ -343,12 +385,10 @@ def place_restore(
             assert rollback_path is not None
             os.replace(destination, rollback_path)
         _copy_archive(source, temporary_destination)
-        os.replace(temporary_destination, destination)
-        if rollback_path is not None:
-            if rollback_path.is_dir() and not rollback_path.is_symlink():
-                shutil.rmtree(rollback_path)
-            else:
-                rollback_path.unlink(missing_ok=True)
+        if choice == "replace":
+            os.replace(temporary_destination, destination)
+        else:
+            _rename_noreplace(temporary_destination, destination)
     except Exception:
         try:
             if temporary_destination.is_dir() and not temporary_destination.is_symlink():
@@ -385,6 +425,16 @@ def place_restore(
         conn.commit()
     finally:
         conn.close()
+
+    # The database now durably records completion. Only now is it safe to
+    # discard the original-data rollback copy. A cleanup failure is harmless:
+    # preserving an extra hidden copy is safer than risking data loss.
+    if rollback_path is not None:
+        try:
+            _remove_placement_artifact(rollback_path)
+        except OSError:
+            pass
+
     shutil.rmtree(staging, ignore_errors=True)
     return {
         "status": "placed",
