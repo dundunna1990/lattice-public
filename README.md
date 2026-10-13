@@ -4,7 +4,7 @@
 
 Lattice connects Ubuntu and Linux Mint computers on a trusted LAN using one **Master** and one or more **Workers**. From the Master, you can monitor fleet health, access peer files, use trusted shell connections, manage backups and restores, and run conservative maintenance without bringing in enterprise fleet-management infrastructure.
 
-> **Current status:** Alpha / early public release. Lattice is already running on real multi-machine fleets, but it should still be treated as software for technically comfortable users who can review changes, backups, and recovery behavior before relying on it for important data.
+> **Current status: Public Alpha — not production-ready.** Lattice is actively being tested and polished. It runs on a real small multi-machine fleet, but bugs, rough edges, and incomplete qualification should be expected. Do **not** treat v0.1.0 as problem-free, enterprise-ready, or appropriate for critical systems. Test it in a non-critical environment first and keep independent backups of anything important.
 
 ![Lattice terminal fleet dashboard](docs/assets/lattice-tui.png)
 
@@ -127,9 +127,23 @@ The repository includes unit, integration, and opt-in real-machine E2E tests.
 
 Normal CI currently runs against Python 3.10, 3.11, and 3.12. Real-machine destructive tests require explicit environment configuration and safety gates; they are intentionally excluded from ordinary CI.
 
+Passing CI means the tested code paths passed the automated suite. It does **not** mean every install, network failure, restore interruption, distribution variant, or hardware environment has been qualified.
+
 ## Project stage
 
-Lattice is currently **v0.1.0 / Alpha**.
+Lattice is currently **v0.1.0 / Public Alpha**.
+
+This release is for **testing, feedback, homelab experimentation, and contribution**. It is not being presented as finished or production-ready software.
+
+Known areas still being improved include:
+
+- broader clean-install and distribution qualification
+- real-machine interruption and recovery testing
+- network fallback behavior when local name discovery is unavailable
+- additional request/retry and authorization hardening
+- operator polish, documentation, and error handling
+
+See [Known limitations](docs/KNOWN_LIMITATIONS.md) for the current public limitations summary.
 
 The focus is on:
 
