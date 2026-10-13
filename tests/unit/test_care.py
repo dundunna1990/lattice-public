@@ -100,19 +100,48 @@ def test_mixed_autoremove_candidates_are_refused(monkeypatch):
     assert "non-kernel" in records[0][2]
 
 
-def test_security_update_policy_rejects_normal_updates(tmp_path):
-    config = tmp_path / "50unattended-upgrades"
-    config.write_text(
-        "Unattended-Upgrade::Allowed-Origins {\n"
-        '  "${distro_id}:${distro_codename}-security";\n'
-        '  "${distro_id}:${distro_codename}-updates";\n'
-        "};\n"
+def test_security_update_policy_uses_effective_apt_configuration(monkeypatch):
+    monkeypatch.setattr(runner.Path, "exists", lambda self: True)
+
+    monkeypatch.setattr(
+        runner,
+        "_run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=(
+                'Unattended-Upgrade::Allowed-Origins "";\n'
+                'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}";\n'
+                'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}-security";\n'
+                'Unattended-Upgrade::Allowed-Origins:: "${distro_id}ESM:${distro_codename}-infra-security";\n'
+            ),
+            stderr="",
+        ),
     )
-    assert runner._unattended_policy_is_security_only(config) is False
-    config.write_text(
-        'Unattended-Upgrade::Allowed-Origins {\n  "${distro_id}:${distro_codename}-security";\n};\n'
+    assert runner._unattended_policy_is_security_only() is True
+
+    monkeypatch.setattr(
+        runner,
+        "_run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=(
+                'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}-security";\n'
+                'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}-updates";\n'
+            ),
+            stderr="",
+        ),
     )
-    assert runner._unattended_policy_is_security_only(config) is True
+    assert runner._unattended_policy_is_security_only() is False
+
+
+def test_security_update_policy_fails_closed_when_apt_config_fails(monkeypatch):
+    monkeypatch.setattr(runner.Path, "exists", lambda self: True)
+    monkeypatch.setattr(
+        runner,
+        "_run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="failed"),
+    )
+    assert runner._unattended_policy_is_security_only() is False
 
 
 def test_run_defers_mutations_on_low_battery(tmp_path, monkeypatch):
@@ -357,7 +386,7 @@ def test_stale_networkmanager_wait_online_failure_is_suppressed(monkeypatch):
                 stderr="",
             ),
             SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="connected (global)\n", stderr=""),
             SimpleNamespace(returncode=0, stdout="", stderr=""),
         ]
     )
@@ -405,6 +434,59 @@ def test_networkmanager_wait_online_failure_remains_when_offline(monkeypatch):
     findings = health.scan_health()
 
     assert any(item["code"] == "systemd.failed" for item in findings)
+
+
+def test_health_reports_systemctl_command_failure(monkeypatch):
+    def fake_run(command, **kwargs):
+        if command[:2] == ["/usr/bin/systemctl", "--failed"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="systemctl failed")
+        if command[:2] == ["/usr/bin/systemctl", "is-active"]:
+            return SimpleNamespace(returncode=1, stdout="inactive\n", stderr="")
+        if command[:2] == ["/usr/bin/dpkg", "--audit"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(health, "_run", fake_run)
+    monkeypatch.setattr(
+        health.shutil, "disk_usage", lambda path: SimpleNamespace(total=100, free=50)
+    )
+    monkeypatch.setattr(
+        health.os, "statvfs", lambda path: SimpleNamespace(f_files=100, f_ffree=100)
+    )
+    monkeypatch.setattr(health.Path, "exists", lambda self: False)
+    monkeypatch.setattr(health.Path, "glob", lambda self, pattern: [])
+
+    findings = health.scan_health()
+
+    assert any(item["code"] == "systemd.check" for item in findings)
+
+
+def test_health_reports_dpkg_command_failure(monkeypatch):
+    def fake_run(command, **kwargs):
+        if command[:2] == ["/usr/bin/systemctl", "--failed"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:2] == ["/usr/bin/systemctl", "is-active"]:
+            return SimpleNamespace(returncode=1, stdout="inactive\n", stderr="")
+        if command[:2] == ["/usr/bin/dpkg", "--audit"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="dpkg failed")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(health, "_run", fake_run)
+    monkeypatch.setattr(
+        health.shutil, "disk_usage", lambda path: SimpleNamespace(total=100, free=50)
+    )
+    monkeypatch.setattr(
+        health.os, "statvfs", lambda path: SimpleNamespace(f_files=100, f_ffree=100)
+    )
+    monkeypatch.setattr(health.Path, "exists", lambda self: False)
+    monkeypatch.setattr(health.Path, "glob", lambda self, pattern: [])
+
+    findings = health.scan_health()
+
+    assert any(
+        item["code"] == "apt.dpkg" and "Could not inspect" in item["subject"]
+        for item in findings
+    )
 
 
 def test_db_write_with_retry_retries_busy_then_succeeds(monkeypatch):

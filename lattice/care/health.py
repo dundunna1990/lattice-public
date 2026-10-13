@@ -22,8 +22,13 @@ def _network_wait_online_is_stale() -> bool:
         manager = _run(["/usr/bin/systemctl", "is-active", "NetworkManager.service"])
         if manager.returncode != 0 or manager.stdout.strip() != "active":
             return False
-        online = _run(["/usr/bin/nm-online", "-s", "-q", "--timeout=5"], timeout=7)
-        return online.returncode == 0
+        state = _run(
+            ["/usr/bin/nmcli", "-t", "-f", "STATE", "general"],
+            timeout=7,
+        )
+        if state.returncode != 0:
+            return False
+        return state.stdout.strip().lower().startswith("connected")
     except (OSError, subprocess.TimeoutExpired):
         return False
 
@@ -64,9 +69,22 @@ def scan_health(*, disk_warning_percent: int = 80, disk_critical_percent: int = 
             )
 
     try:
-        failed = _run(
+        failed_result = _run(
             ["/usr/bin/systemctl", "--failed", "--no-legend", "--plain"]
-        ).stdout.splitlines()
+        )
+        if failed_result.returncode != 0:
+            detail = (failed_result.stderr or failed_result.stdout or "systemctl check failed").strip()
+            findings.append(
+                _finding(
+                    "systemd.check",
+                    "attention",
+                    "Could not inspect system services",
+                    detail[:1000],
+                )
+            )
+            failed = []
+        else:
+            failed = failed_result.stdout.splitlines()
         failed = [
             line.strip() for line in failed if line.strip() and "lattice-care.service" not in line
         ]
@@ -104,8 +122,19 @@ def scan_health(*, disk_warning_percent: int = 80, disk_critical_percent: int = 
         )
 
     try:
-        audit = _run(["/usr/bin/dpkg", "--audit"]).stdout.strip()
-        if audit:
+        audit_result = _run(["/usr/bin/dpkg", "--audit"])
+        audit = (audit_result.stdout or "").strip()
+        if audit_result.returncode != 0:
+            detail = (audit_result.stderr or audit or "dpkg audit failed").strip()
+            findings.append(
+                _finding(
+                    "apt.dpkg",
+                    "attention",
+                    "Could not inspect package manager",
+                    detail[:1000],
+                )
+            )
+        elif audit:
             findings.append(
                 _finding("apt.dpkg", "attention", "Package manager needs attention", audit[:1000])
             )

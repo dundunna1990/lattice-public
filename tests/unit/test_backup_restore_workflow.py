@@ -111,6 +111,33 @@ def test_keep_both_preserves_existing_original(tmp_path, monkeypatch):
     assert restored != selected
 
 
+def test_keep_both_refuses_destination_that_appears_during_copy(tmp_path, monkeypatch):
+    _, home, selected, staged = _stage(tmp_path, monkeypatch, conflict=True)
+    raced_destination = home / "raced-restore.txt"
+    monkeypatch.setattr(
+        restore_workflow,
+        "_keep_both_destination",
+        lambda original: raced_destination,
+    )
+    real_copy = restore_workflow._copy_archive
+
+    def copy_then_race(source, temporary):
+        real_copy(source, temporary)
+        raced_destination.write_text("new user data")
+
+    monkeypatch.setattr(restore_workflow, "_copy_archive", copy_then_race)
+
+    with pytest.raises(
+        restore_workflow.BackupRestoreWorkflowError,
+        match="nothing was overwritten",
+    ):
+        restore_workflow.place_restore(staged["session_uuid"], "keep_both")
+
+    assert selected.read_text() == "current"
+    assert raced_destination.read_text() == "new user data"
+    assert not list(home.glob(".lattice-restore-new-*"))
+
+
 def test_replace_places_backup_at_original_location(tmp_path, monkeypatch):
     _, _, selected, staged = _stage(tmp_path, monkeypatch, conflict=True)
     result = restore_workflow.place_restore(staged['session_uuid'], 'replace')
@@ -222,6 +249,8 @@ def test_place_restore_preserves_staging_if_terminal_db_update_fails(tmp_path, m
     with pytest.raises(sqlite3.OperationalError, match="simulated"):
         restore_workflow.place_restore(staged["session_uuid"], "replace")
     assert selected.read_text() == "from backup"
+    rollback = selected.parent / f".lattice-restore-replaced-{staged['session_uuid']}"
+    assert rollback.read_text() == "current"
     assert staging.exists()
 
 def test_cancel_removes_staging_without_touching_home(tmp_path, monkeypatch):
