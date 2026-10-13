@@ -2,6 +2,12 @@
 from pathlib import Path
 
 
+def test_installer_provisions_python_build_dependencies():
+    installer = Path("deploy/install.sh").read_text()
+    assert "python3-dev" in installer
+    assert "build-essential" in installer
+
+
 def test_installer_creates_stable_operator_command_and_rolls_it_back():
     installer = Path("deploy/install.sh").read_text()
     assert 'CLI_LAUNCHER="/usr/local/bin/lattice"' in installer
