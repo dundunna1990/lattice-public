@@ -46,7 +46,7 @@ if [[ -e "$INSTALL_ROOT" || -L "$INSTALL_ROOT" ]]; then
     HAD_EXISTING_INSTALL=1
 fi
 LATTICE_APT_PACKAGES=(
-    python3 python3-venv python3-pip
+    python3 python3-venv python3-pip python3-dev build-essential
     avahi-utils avahi-daemon
     sudo openssh-client openssh-server sshfs fuse3
     iproute2 iputils-ping arping iptables
