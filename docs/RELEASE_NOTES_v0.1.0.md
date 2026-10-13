@@ -30,7 +30,11 @@ This release is intended for:
 
 ## Project status
 
-**Alpha.** Lattice is running on real multi-machine fleets, but public users should test backup, restore, networking, and recovery behavior in their own environment before depending on it for important data.
+**Public Alpha — not production-ready.** Lattice is running on a real small multi-machine fleet, but bugs, rough edges, and incomplete qualification are expected. Do not treat v0.1.0 as problem-free or suitable for critical systems. Test it in a non-critical environment first and keep independent backups of important data.
+
+## What this release is for
+
+This release is intended for testing, homelab use, feedback, and contribution while reliability and polish continue to improve. See [Known limitations](KNOWN_LIMITATIONS.md) before relying on Lattice for anything important.
 
 ## Install
 
