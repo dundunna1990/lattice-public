@@ -6,6 +6,8 @@ Lattice connects Ubuntu and Linux Mint computers on a trusted LAN using one **Ma
 
 > **Current status:** Alpha / early public release. Lattice is already running on real multi-machine fleets, but it should still be treated as software for technically comfortable users who can review changes, backups, and recovery behavior before relying on it for important data.
 
+![Lattice terminal dashboard showing a healthy three-node fleet](docs/images/lattice-tui-dashboard.png)
+
 ## What Lattice does
 
 - **Fleet health** — monitor paired computers and their last-known state from one Master
