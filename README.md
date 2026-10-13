@@ -1,71 +1,84 @@
 # Lattice
 
-**Manage a small fleet of Linux computers from one machine.**
+**Manage a small group of Linux computers from one main machine.**
 
-Lattice connects Ubuntu and Linux Mint computers on a trusted LAN using one **Master** and one or more **Workers**. From the Master, you can monitor fleet health, access peer files, use trusted shell connections, manage backups and restores, and run conservative maintenance without bringing in enterprise fleet-management infrastructure.
+Lattice is an open-source Linux fleet manager for small trusted networks. Install it on each Ubuntu or Linux Mint computer you want to manage, choose one computer as the **Master**, and make the others **Workers**.
+
+A **node** simply means a computer running Lattice. After the nodes are paired, the Master gives you one place to see fleet health, reach files, use trusted SSH connections, watch backups, check maintenance, and see when something needs attention.
 
 > **Current status: Public Alpha — not production-ready.** Lattice is actively being tested and polished. It runs on a real small multi-machine fleet, but bugs, rough edges, and incomplete qualification should be expected. Do **not** treat v0.1.0 as problem-free, enterprise-ready, or appropriate for critical systems. Test it in a non-critical environment first and keep independent backups of anything important.
 
-![Lattice terminal fleet dashboard](docs/assets/lattice-tui.png)
+## How Lattice works
 
-## What Lattice does
-
-- **Fleet health** — monitor paired computers and their last-known state from one Master
-- **Persistent peer file access** — mount another Lattice computer's exported Home through a dedicated transport
-- **Trusted shell connectivity** — maintain authenticated shell access between active fleet members
-- **Bounded auto-heal** — recover a deliberately limited set of known failures instead of running unrestricted repair logic
-- **Backups and restores** — source-owned Restic backups, staged restore workflows, and encrypted recovery-kit support
-- **Daily Care** — conservative maintenance and health checks with explicit safety boundaries
-- **Network reconciliation** — detect and reconcile supported NetworkManager state changes
-- **Operator TUI + CLI** — everyday fleet management from the terminal through a read-only operator interface and narrow privileged controls
-
-## Architecture
+A Lattice fleet has one Master and one or more Workers.
 
 ```text
-                    ┌─────────────────────┐
-                    │    Lattice Master   │
-                    │  status / control   │
-                    └─────────┬───────────┘
-                              │
-                signed fleet state + LAN
-                              │
-              ┌───────────────┴───────────────┐
-              │                               │
-      ┌───────▼────────┐              ┌───────▼────────┐
-      │ Lattice Worker │              │ Lattice Worker │
-      │ files / shell  │              │ files / shell  │
-      │ health / care  │              │ health / care  │
-      └────────────────┘              └────────────────┘
+                  Your main computer
+                   Lattice Master
+                        │
+             ┌──────────┴──────────┐
+             │                     │
+         Laptop                 Mini PC
+     Lattice Worker         Lattice Worker
 ```
 
-Lattice separates normal fleet management from privileged host operations and uses dedicated transports for file access, trusted shell access, backups, pairing, and recovery.
+- **Master** — the main computer you use to view and manage the fleet.
+- **Worker** — another computer that joins the Master and becomes part of the fleet.
+- **Node** — any computer running Lattice, including the Master.
 
-## Good fit for
+For example, a desktop, laptop, and mini PC running Lattice would be a **three-node fleet**: one Master and two Workers.
 
-Lattice is intended for people who run a **small trusted Linux fleet** such as:
+Workers are paired to the Master with a short-lived pairing code and a local approval step on the Worker. Lattice keeps a permanent identity for each node, so an IP address is treated as where a computer currently is on the network, not as the computer's identity.
 
-- a homelab
-- several household Linux computers
-- a workshop or small office
-- a personal development/test fleet
-- a few headless and desktop machines on the same trusted LAN
+## What you can do
 
-It is **not** intended to replace enterprise MDM, Kubernetes, Active Directory, or large-scale configuration-management systems.
+### See the whole fleet from one place
 
-## Supported systems
+The Master dashboard shows which computers are healthy, which are online, whether file and shell connections are working, backup state, Daily Care state, alerts, and supported automation status.
 
-Lattice v0.1 supports:
+![Lattice terminal fleet dashboard](docs/assets/lattice-tui.png)
 
-- Ubuntu
-- Linux Mint
-- NetworkManager-based networking
-- Python 3.10–3.12
+### Access files between your computers
 
-Other distributions and network stacks are not currently qualified.
+Lattice can make a paired computer's Home files available from another node, so you do not have to manually build separate file-sharing arrangements for every machine.
 
-## Quick start
+Peer Home mounts are **intentionally read/write**. Writing through a peer mount **changes that peer's real Home directory**. Treat this as real remote file access, not as a backup.
+
+### Connect to another computer's terminal
+
+Lattice sets up and maintains a dedicated trusted SSH connection between active fleet members. This gives the fleet a managed shell connection for supported Lattice operations while keeping ordinary administrative SSH separate.
+
+Normal port-22 SSH is still the right path for normal administration and software upgrades.
+
+### Back up one computer to another
+
+Lattice uses Restic for backups. The computer being backed up reads its own data and sends it directly to its assigned backup target; the Master coordinates the assignment and watches backup state without carrying the backup data itself.
+
+Backups use a separate protected connection from file access and trusted shell access. Restores are staged first instead of blindly writing restored data directly into a live Home directory.
+
+### Daily Care
+
+Each node can check itself for conditions such as disk pressure, failed services, package problems, memory pressure, temperature, battery state where available, and whether a reboot is required.
+
+Daily Care can also perform a limited set of conservative maintenance tasks. It does **not** delete personal Home files, projects, browser data, containers, virtual machines, or backup repositories just to make space.
+
+### Limited automatic recovery
+
+Lattice can automatically recover from a deliberately small set of problems it knows how to handle safely. It does not have unrestricted permission to run arbitrary repair commands.
+
+If repeated repair attempts fail, a safety gate blocks the action, or Lattice cannot prove a repair is safe, it stops and reports the problem instead of guessing.
+
+### Network and node tracking
+
+Lattice tracks each node by a permanent node identity rather than trusting an IP address as identity. Supported NetworkManager changes can be detected and reconciled while the Master keeps track of the current route to each active Worker.
+
+## Getting started
 
 Lattice installation requires a real Git checkout. GitHub's **Download ZIP** is not supported because the installer verifies tracked release files and Git metadata.
+
+### 1. Pick your Master
+
+Start on the computer you want to use as your main Lattice machine.
 
 ```bash
 git clone https://github.com/dundunna1990/lattice-public.git
@@ -73,24 +86,105 @@ cd lattice-public
 sudo ./lattice-bootstrap.sh
 ```
 
-The bootstrap installs Lattice and immediately opens the guided setup wizard.
+The installer opens the guided setup wizard. Choose **Master**.
 
-Choose one computer as the **Master** and each additional computer as a **Worker**. Pair Workers from the Master using the one-time pairing flow.
+### 2. Install Lattice on a Worker
 
-After setup:
+On the next computer you want to add, run the same commands:
+
+```bash
+git clone https://github.com/dundunna1990/lattice-public.git
+cd lattice-public
+sudo ./lattice-bootstrap.sh
+```
+
+Choose **Worker**.
+
+The Worker starts its pairing process, waits for the Master, and displays a pairing code.
+
+### 3. Add the Worker from the Master
+
+On the Master, open Lattice:
 
 ```bash
 lattice re-run
 ```
 
-Useful read-only checks:
+Choose **Add Computer**. The Master scans the local network for Lattice Workers that are waiting to pair.
+
+Select the Worker and enter the **entire pairing code exactly as shown, including the dash**.
+
+### 4. Approve on the Worker
+
+Return to the Worker and approve the pending request. During first-time setup, the Worker screen tells you when to press **A** to approve.
+
+Lattice then verifies the Worker and adds it to the fleet.
+
+> During pairing, Lattice may assign the Worker its permanent Lattice network address. If you are installing through SSH and that address changes, the SSH session may disconnect. Reconnect using the Worker's new address if needed.
+
+### 5. Repeat for more Workers
+
+Repeat the Worker install and pairing steps for each additional computer.
+
+When finished, check the fleet from the Master:
 
 ```bash
 lattice status
-lattice workers list
-lattice shell status
-lattice system status
 ```
+
+or open the dashboard again with:
+
+```bash
+lattice re-run
+```
+
+For the full walkthrough, see [Installation](docs/INSTALLATION.md).
+
+## Headless Workers are supported
+
+A Worker does not need a monitor or desktop environment. If you can SSH into the machine, you can install Lattice through that terminal:
+
+```bash
+ssh user@worker-address
+```
+
+Then clone the repository and run the same bootstrap command shown above. The curses setup wizard works inside the SSH terminal.
+
+## What the installer changes
+
+Lattice is a system-management tool, so the installer does more than copy an application into your Home directory.
+
+Depending on the role and setup choices, it installs the required packages and Lattice services, creates Lattice-managed service accounts and permissions, prepares the dedicated SSH-based connections used by Lattice, applies the Lattice firewall rules needed for the selected role, and records supported network state so setup and removal can be handled safely.
+
+If you are testing Lattice, use a non-critical machine or lab first.
+
+## Supported systems
+
+Lattice v0.1 currently targets:
+
+- Ubuntu
+- Linux Mint
+- NetworkManager-based networking
+- normal IPv4 LAN connectivity
+- Python 3.10–3.12
+
+Other distributions and network stacks are not currently qualified.
+
+## Removing Lattice
+
+From the cloned Lattice repository, a full removal that also restores the original network configuration recorded during setup is:
+
+```bash
+sudo ./deploy/uninstall.sh --purge --restore-network
+```
+
+If you intentionally want to keep the machine's current network configuration instead:
+
+```bash
+sudo ./deploy/uninstall.sh --purge --keep-network
+```
+
+Read the prompts and verify the machine's network state after removal.
 
 ## Safety model
 
@@ -104,16 +198,33 @@ Examples:
 - Fleet membership state is signed.
 - Dedicated SSH transports use strict host-key verification.
 - Real-machine destructive tests are opt-in rather than part of normal test runs.
+- Normal status reads use a **read-only operator interface** separated from the privileged operations that make system changes.
 
-Peer Home mounts are **intentionally read/write**. Writing through a peer mount changes that peer's real Home directory.
+The dedicated file, trusted-shell, backup, pairing, and recovery paths are intentionally kept separate rather than sharing one unrestricted credential or control path.
+
+## Good fit for
+
+Lattice is intended for people who run a **small trusted Linux fleet**, such as:
+
+- a homelab
+- several household Linux computers
+- a workshop or small office
+- a personal development/test fleet
+- a few headless and desktop machines on the same trusted LAN
+
+It is **not** intended to replace enterprise MDM, Kubernetes, Active Directory, or large-scale configuration-management systems.
 
 ## Documentation
 
-Start here:
+New to Lattice? Start here:
+
+- [Installation](docs/INSTALLATION.md) — step-by-step Master, Worker, and pairing setup
+- [Operator guide](docs/OPERATOR_GUIDE.md) — what to do after the fleet is running
+- [Known limitations](docs/KNOWN_LIMITATIONS.md) — current Public Alpha limitations
+
+More detailed reference:
 
 - [Documentation index](docs/README.md)
-- [Installation](docs/INSTALLATION.md)
-- [Operator guide](docs/OPERATOR_GUIDE.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Backup and recovery](docs/BACKUP_AND_RECOVERY.md)
@@ -144,14 +255,6 @@ Known areas still being improved include:
 - operator polish, documentation, and error handling
 
 See [Known limitations](docs/KNOWN_LIMITATIONS.md) for the current public limitations summary.
-
-The focus is on:
-
-- correctness and recovery safety
-- dependable behavior on small real fleets
-- clear operator visibility
-- conservative automation
-- improving clean-install and real-machine qualification
 
 Bug reports and technically detailed feedback are welcome.
 
