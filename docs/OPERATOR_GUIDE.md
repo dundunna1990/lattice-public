@@ -61,6 +61,25 @@ The Master scans for Workers that are actively waiting to pair. It does not enro
 
 See [Installation](INSTALLATION.md) for the full walkthrough.
 
+## Removing and re-adding a Worker
+
+Removing a Worker is a trust-revocation operation, not just removing it from the dashboard.
+
+On a successful removal, Lattice:
+
+1. verifies that the Worker's current Master pairing credentials have been revoked locally
+2. publishes a new signed fleet generation that no longer includes that Worker as an active member
+3. records the removed node identity as revoked in fleet state
+4. rebuilds managed file and trusted-shell access from the remaining active fleet
+
+This means the removed Worker is no longer authorized by the managed file or trusted-shell transports on the remaining nodes as they reconcile the new fleet state.
+
+Backup access is separate from file and shell access. Backup authorization is generated from its own signed assignment state, and only active fleet members are included. After a Worker is revoked, the next backup assignment generation drops any remote assignment for that node; target-side reconciliation then removes the stale backup authorization and its Lattice-managed backup transport account. Because backup assignment reconciliation runs separately, that cleanup can follow the fleet revocation rather than happen at exactly the same instant.
+
+Firewall rules behave differently. Lattice's managed firewall rules are LAN-scoped service rules, not per-node trust entries. Removing one Worker therefore does not remove the Lattice service ports from every other node. Those rules remain part of the installed Lattice service configuration until the relevant uninstall or firewall-restore path removes them.
+
+A permanent node ID is the machine's identity, not a credential that grants access by itself. If the **same Lattice installation** is added back later, it can keep the same permanent node ID, but it must still complete a fresh pairing code, local approval, and signed fleet activation before trust is restored. A different machine receives a different node ID and does not inherit the removed machine's trust.
+
 ## File access
 
 Lattice can make another active node's Home files available through a dedicated file connection.
